@@ -31,7 +31,7 @@ section is only a snapshot of the current phase. It is NOT updated
 per feature or task — it changes only when the current roadmap phase
 changes, which `/ship-feature` handles when a phase is completed.
 
-- Current phase: **01 — Core tenancy & RLS**
+- Current phase: **02 — Accounts, roles & audit log**
 - Status: Not started
 - Also eligible: none
 
