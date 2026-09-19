@@ -21,10 +21,13 @@ services:
       POSTGRES_USER: reviewflow
       POSTGRES_PASSWORD: local_dev_only
     ports: ["5432:5432"]
+    volumes: ["./docker/postgres/init:/docker-entrypoint-initdb.d:ro"]
   redis:
     image: redis:7
     ports: ["6379:6379"]
 ```
+
+`POSTGRES_USER` is a superuser and is for manual admin only. `docker/postgres/init/01-app-role.sql` creates `reviewflow_app` (no superuser, no `BYPASSRLS`; `CREATEDB` only for the test database), which the application connects as so RLS applies (see `../02-architecture/Multi-Tenancy.md` §"No Standing Privileged Role"). Init scripts run only on a fresh data directory: after pulling this change, run `docker compose down` then `docker compose up -d`, then `python manage.py migrate`.
 
 ## Environment Variables
 
@@ -32,7 +35,7 @@ See `../02-architecture/Security-Architecture.md` for what must never be committ
 
 ```
 DJANGO_SECRET_KEY=...
-DATABASE_URL=postgres://reviewflow:local_dev_only@localhost:5432/reviewflow
+DATABASE_URL=postgres://reviewflow_app:local_dev_only@localhost:5432/reviewflow
 REDIS_URL=redis://localhost:6379/0
 FERNET_KEY=...
 META_APP_ID=...
