@@ -31,12 +31,14 @@ section is only a snapshot of the current phase. It is NOT updated
 per feature or task — it changes only when the current roadmap phase
 changes, which `/ship-feature` handles when a phase is completed.
 
-- Current phase: **00 — Project scaffold & dev environment**
+- Current phase: **01 — Core tenancy & RLS**
 - Status: Not started
 - Also eligible: none
 
-No application code exists yet — do not assume any app, model,
-manager, helper, or setting exists.
+Phase 00 — Project scaffold & dev environment is Done: only the
+Django project scaffold exists (`config/`, Celery wiring, pytest).
+No Django apps exist yet — do not assume any app, model, manager,
+or helper exists.
 
 - Before assuming a component exists, check its phase status in
   `docs/ROADMAP.md` and confirm the code is actually present.
@@ -45,8 +47,8 @@ manager, helper, or setting exists.
 
 ## Technology Stack
 
-- Backend: Django + Django REST Framework monolith (Python 3.x;
-  exact version pinned at project init)
+- Backend: Django + Django REST Framework monolith (Python 3.12,
+  pinned in `.python-version` and `pyproject.toml`)
 - Async: Celery worker and Celery Beat, as separate processes
 - Redis: Celery broker/result backend and rate-limit counters only;
   never the source of truth for business data
@@ -133,8 +135,8 @@ activate it first; `python` is not on the system PATH on this machine.
     python manage.py runserver
 
     # Background workers (separate processes from the web server)
-    celery -A reviewflow worker -Q events,whatsapp,google_sync,default -l info
-    celery -A reviewflow beat -l info
+    celery -A config worker -Q events,whatsapp,google_sync,default -l info
+    celery -A config beat -l info
 
     # Tests: pytest, with Celery in eager mode for integration tests
     pytest
