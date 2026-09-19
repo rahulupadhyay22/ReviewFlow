@@ -1,3 +1,5 @@
+
+
 # ReviewFlow — Claude Code Guide
 
 ReviewFlow connects to a merchant's sale-capture system (POS or
@@ -21,6 +23,15 @@ for the reading order.
 - Build order: `docs/ROADMAP.md`
 - Never change a locked decision without explicit user sign-off.
 
+## Current State
+
+- Phase 00 has not started. No application code exists yet — do not
+  assume any app, model, manager, helper, or setting exists.
+- Before assuming a component exists, check its phase status in
+  `docs/ROADMAP.md` and confirm the code is actually present.
+- Do not implement a later phase's feature unless the active spec in
+  `.claude/specs/` explicitly targets it.
+
 ## Technology Stack
 
 - Backend: Django + Django REST Framework monolith (Python 3.x;
@@ -38,13 +49,115 @@ for the reading order.
 - External providers: Meta WhatsApp Cloud API, Google Business
   Profile API, Razorpay
 
-Local development (see `docs/10-development/Development-Setup.md`):
+## Project Structure
 
+Target Django layout, from `docs/02-architecture/SAD.md` §3 and
+`docs/05-integrations/Integration-Architecture.md`. Apps are created
+in the phase that builds them (see `docs/ROADMAP.md`). Do not add
+apps that are not listed here.
+
+    reviewflow/
+    ├── config/          # settings, urls, celery.py, asgi/wsgi
+    ├── core/            # base models, tenant mixins, permissions, exceptions
+    ├── accounts/        # Merchant, User, TeamMember, TeamMemberLocation, roles, auth
+    ├── locations/       # Location model, location settings
+    ├── integrations/
+    │   ├── core/        # adapters.py, events.py, schemas.py, registry.py
+    │   ├── shopify/     # V1 implementation priority
+    │   ├── webhook/     # generic inbound webhook (merchant field mapping)
+    │   ├── csv_import/  # CSV import
+    │   ├── woocommerce/ petpooja/ gofrugal/   # V1 scope, phased implementation
+    │   └── zapier/ make/                      # V1 scope, phased implementation
+    ├── events/          # IntegrationEvent inbox, idempotency, normalization
+    ├── customers/       # Customer model, opt-out
+    ├── transactions/    # Transaction model
+    ├── campaigns/       # ReviewCampaign, CampaignExecution, eligibility engine
+    ├── whatsapp/        # WhatsAppService, providers/, templates, webhooks
+    ├── google_reviews/  # GoogleConnection, GoogleLocation, GoogleReview, sync
+    ├── feedback/        # Feedback model + page API
+    ├── qrcodes/         # QRCode model + generation
+    ├── analytics/       # dashboard read/aggregation queries
+    ├── billing/         # Subscription, Plan, UsageRecord, payment webhooks
+    ├── apikeys/         # ApiKey, scoping, rate limiting
+    └── auditlog/        # AuditLog model + middleware
+
+There is no separate admin app: internal admin is customized Django
+Admin registrations across these apps.
+
+### Where things belong
+
+- Business logic → the owning app's `services.py`
+- HTTP layer → `views.py` / `serializers.py`, kept thin; they call
+  services
+- Background work → `tasks.py`, thin wrappers around services
+- External providers → their adapter/provider interface
+  (`integrations/<provider>/` implementing `BaseAdapter`;
+  `whatsapp/providers/` implementing `WhatsAppProvider`;
+  `GoogleSyncProvider` for Google)
+- Tests → the app's tests (e.g. `<app>/tests/test_<topic>.py`), with
+  feature-local fixtures
+- Django Admin → `<app>/admin.py`
+
+## Commands
+
+Setup, run, and worker commands are from
+`docs/10-development/Development-Setup.md`; the test command is from
+`docs/10-development/Testing-Strategy.md`. `docker compose up -d` is
+not in the docs — it is the standard operational command for starting
+the Postgres + Redis services that Development-Setup.md defines in its
+illustrative `docker-compose.yml` (finalized at project init).
+
+Python must be run through the project's virtual environment —
+activate it first; `python` is not on the system PATH on this machine.
+
+    # Local services (operational command; see note above)
     docker compose up -d
+
+    # Setup
+    pip install -r requirements.txt   # or poetry/uv equivalent
     python manage.py migrate
+    python manage.py createsuperuser  # for Django Admin access
+
+    # Run the API
     python manage.py runserver
+
+    # Background workers (separate processes from the web server)
     celery -A reviewflow worker -Q events,whatsapp,google_sync,default -l info
     celery -A reviewflow beat -l info
+
+    # Tests: pytest, with Celery in eager mode for integration tests
+    pytest
+
+Seed data: a seed management command (test `Merchant` with 2+
+`Location`s, a `SHARED_POOL` `WhatsAppAccount` fixture, and a
+`Plan`/`Subscription` pair) is built starting in Phase 03 — see
+`docs/ROADMAP.md`.
+
+## Code Style
+
+From `docs/10-development/Coding-Standards.md` §5–§6:
+
+- Django apps: lowercase; plural when the app is a collection of
+  things (`locations`, `transactions`), singular when it is a concept
+  (`billing`, `analytics`).
+- Model fields: `snake_case`.
+- Timestamps always end in `_at` (`sent_at`, `occurred_at`).
+- Booleans prefixed `is_` / `has_` where it reads naturally.
+- Status/enum values in `UPPER_SNAKE_CASE` (`SCHEDULED`,
+  `QUOTA_EXCEEDED`).
+- Migrations: one logical change per migration where practical.
+  Never silently drop data — a destructive migration requires an
+  explicit backup step noted in the PR description.
+
+## Dependencies
+
+- Do not add a new pip package mid-feature without flagging it to the
+  user.
+- Every new dependency must be listed in the active spec's
+  "New dependencies" section, and `requirements.txt` must stay in
+  sync.
+- Prefer the standard library and existing dependencies where they
+  do the job.
 
 ## V1 / V2 Boundary
 
@@ -157,6 +270,42 @@ Queues: `events`, `whatsapp`, `google_sync`, `default`.
   `docs/10-development/Testing-Strategy.md` that a feature touches.
 - Mock an external provider only when the feature uses it.
 - Never skip, `xfail`, or weaken a test to make it pass.
+
+## Warnings and Things to Avoid
+
+Quick list of the locked, high-risk rules (details in the sections
+above and in `docs/`):
+
+- **Never schedule sends with Celery `eta` / `countdown`** — dispatch
+  is poll-based (`dispatch_due_executions`, `FOR UPDATE SKIP LOCKED`).
+- **Never substitute `google_place_id` for `google_location_id`** (or
+  the reverse) — the Business Profile location ID and the Place ID
+  are stored separately; review links use the Place ID only.
+- **Never implement a field just because it is in the Data
+  Dictionary** — check `docs/01-product/Feature-Scope.md` first
+  (e.g. `GoogleReview.reply_text` is V2).
+- **Never store a raw IP address** — `QRScanEvent` stores only a
+  salted `ip_hash`.
+- **Never put `DELIVERED` / `READ` on `CampaignExecution`** — those
+  statuses belong only to `WhatsAppMessage`.
+- **Never create a tenant-owned table without RLS** enabled and its
+  policy defined.
+- **Never hide or withhold the Google CTA based on a feedback
+  rating** — no review gating.
+
+## Subagent Policy
+
+- `/test-feature` uses `reviewflow-test-writer` (writes tests) and
+  then `reviewflow-test-runner` (runs and classifies them).
+- `/code-review-feature` runs `reviewflow-security-reviewer` and
+  `reviewflow-quality-reviewer` in parallel.
+- Use the built-in Explore subagent only when broad repository
+  exploration is actually useful — not for reading files whose paths
+  are already known.
+- In Plan Mode, read the active spec and the docs it references
+  before presenting a plan.
+- Do not duplicate work: don't re-run a subagent's task yourself, and
+  don't launch a subagent for something already in context.
 
 ## Git & Branch Rules
 

@@ -39,7 +39,7 @@
 ## Row-Level Security
 
 - [ ] RLS enabled on every tenant-owned table.
-- [ ] `SET LOCAL app.current_merchant_id` executed inside each tenant database transaction (`transaction.atomic()`) before any tenant-scoped query — transaction-local, never session/connection-level, so the value cannot leak across pooled connections (see `../02-architecture/Multi-Tenancy.md` and `../FINAL-ARCHITECTURE-REVIEW.md` §8).
+- [ ] `SET LOCAL app.current_merchant_id` executed inside each tenant database transaction (`transaction.atomic()`) before any tenant-scoped query — transaction-local, never session/connection-level, so it cannot leak across pooled connections (see `../02-architecture/Multi-Tenancy.md` and `../FINAL-ARCHITECTURE-REVIEW.md` §8).
 - [ ] RLS policies tested explicitly to fail a cross-tenant read/write (see `../10-development/Testing-Strategy.md`).
 
 ## Dependency & Code Security

@@ -59,11 +59,9 @@ git checkout -b <branch_name>
 ```
 
 ## Step 6 — Research the docs and codebase
-Always read:
+Always read, in this order:
 - `docs/README.md` — doc map and locked decisions
-- `docs/ROADMAP.md` — phase scope, dependencies, and status; the
-  step number must match a phase, its dependencies should be done,
-  and it must not be marked done already (warn the user if not)
+- `docs/ROADMAP.md` — phase numbers, dependencies, and status
 - `docs/FINAL-ARCHITECTURE-REVIEW.md` — locked decisions (never contradict)
 - `docs/01-product/Feature-Scope.md` — V1 vs V2 source of truth
 - `docs/02-architecture/SAD.md` — Django app structure, Celery queues
@@ -85,6 +83,12 @@ Also inspect existing code (Django apps, `models.py`, `services.py`,
 migrations) so the spec builds on what exists rather than re-creating it.
 
 Stop and warn the user if:
+- `step_number` is not a phase in `docs/ROADMAP.md`, or the feature
+  does not belong to that phase.
+- That phase is already marked Done in `docs/ROADMAP.md`.
+- Any phase it depends on (per the ROADMAP "Depends on" column) is not
+  marked Done. Never spec work from a later phase ahead of its
+  dependencies.
 - The feature is marked **V2 — Planned. V1 Implementation: NO.**
   in `Feature-Scope.md` (a field existing in the Data Dictionary
   does NOT make it V1 — e.g. `GoogleReview.reply_text`).
