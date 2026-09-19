@@ -174,8 +174,8 @@ mark every item as checked [x]>
    SHARED_POOL WhatsAppAccount, Plan/Subscription)
 4. pytest
 5. python manage.py runserver
-   (plus `celery -A reviewflow worker -Q events,whatsapp,google_sync,default -l info`
-   and `celery -A reviewflow beat -l info` if the feature uses background tasks)
+   (plus `celery -A config worker -Q events,whatsapp,google_sync,default -l info`
+   and `celery -A config beat -l info` if the feature uses background tasks)
 6. <specific steps from the spec to verify this feature works —
    API calls, Django Admin checks, webhook posts>
 ```

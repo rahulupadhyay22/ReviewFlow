@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python (recent 3.x — pin the exact version in `pyproject.toml`/`.python-version` at project init)
+- Python 3.12 (pinned in `.python-version` and `pyproject.toml`)
 - PostgreSQL (local via Docker recommended, matching the Supabase Postgres version used in production)
 - Redis (local via Docker)
 - Node.js (for the Next.js frontend, separate repo/package)
@@ -57,8 +57,8 @@ python manage.py runserver
 Celery worker and Beat must run as **separate processes** from the web server, mirroring production (see `../02-architecture/SAD.md` §9):
 
 ```bash
-celery -A reviewflow worker -Q events,whatsapp,google_sync,default -l info
-celery -A reviewflow beat -l info
+celery -A config worker -Q events,whatsapp,google_sync,default -l info
+celery -A config beat -l info
 ```
 
 ## Seed Data

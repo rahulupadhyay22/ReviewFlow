@@ -26,7 +26,7 @@ several specs if it is too large for one branch.
 
 | #  | Phase                                     | Depends on         | Status      |
 |----|-------------------------------------------|--------------------|-------------|
-| 00 | Project scaffold & dev environment        | —                  | Not started |
+| 00 | Project scaffold & dev environment        | —                  | Done        |
 | 01 | Core tenancy & RLS                        | 00                 | Not started |
 | 02 | Accounts, roles & audit log               | 01                 | Not started |
 | 03 | Locations, manager assignment & seed data | 02                 | Not started |
