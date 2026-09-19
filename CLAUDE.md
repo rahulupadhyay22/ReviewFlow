@@ -35,8 +35,10 @@ changes, which `/ship-feature` handles when a phase is completed.
 - Status: Not started
 - Also eligible: none
 
-No application code exists yet — do not assume any app, model,
-manager, helper, or setting exists.
+Phase 00 — Project scaffold & dev environment is Done: only the
+Django project scaffold exists (`config/`, Celery wiring, pytest).
+No Django apps exist yet — do not assume any app, model, manager,
+or helper exists.
 
 - Before assuming a component exists, check its phase status in
   `docs/ROADMAP.md` and confirm the code is actually present.
