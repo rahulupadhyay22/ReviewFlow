@@ -44,6 +44,62 @@ pytest
 If migrations are missing or any test fails, stop and report the
 failures. Never ship with failing tests.
 
+## Step 4a — Roadmap phase status
+`docs/ROADMAP.md` is the source of truth for phase names, numbers,
+dependencies, and completion state. The phase for this feature is the
+spec's `<step>` prefix (e.g. `03-locations.md` → Phase 03).
+
+This step runs on the feature branch, **before** the commit, so any
+status change is included in this PR and reaches `main` only if the
+PR is merged (Steps 10–11). Never edit `docs/ROADMAP.md` or
+`CLAUDE.md` on `main`, and never after cleanup.
+
+1. **Does this feature complete the entire phase?**
+   - Read the spec's `## Roadmap Phase` section.
+     - `Completes entire phase: No` → partial completion.
+     - `Completes entire phase: Yes` → the spec's explicit
+       declaration that this feature is intended to complete the
+       phase.
+   - The `Yes` declaration is not sufficient by itself. Before
+     marking the phase Done, verify that every item in that phase's
+     section of `docs/ROADMAP.md` is covered by merged specs plus
+     this one.
+   - One shipped feature is NOT enough on its own to mark a phase
+     Done.
+   - If the `## Roadmap Phase` section is missing, or says `Yes` but
+     roadmap items appear uncovered, treat it as not confidently
+     determined (below).
+   - If you cannot confidently determine it, STOP and ask:
+     "Does this PR complete Phase <NN> — <phase name> in
+     docs/ROADMAP.md? (yes / no)"
+     Only an explicit "yes" counts as complete. Anything else is
+     treated as partial.
+
+2. **If the phase is only partially complete:** do not change its
+   status, and do not change `CLAUDE.md`. Continue to Step 5.
+
+3. **If the phase is complete:**
+   a. In `docs/ROADMAP.md`, set that phase's Status to `Done`.
+      Change nothing else in the roadmap.
+   b. Determine the next eligible phase from the ROADMAP table: the
+      lowest-numbered phase not marked Done whose every dependency is
+      marked Done. Dependency notation: `NN, MM` = all required;
+      `NN–MM` = every phase in the range; `NN (+MM, <part>)` = `NN`
+      is required to start the phase, `MM` only for `<part>`.
+      Never skip a dependency and never advance to a phase whose
+      dependencies are not all Done. Also list any other eligible
+      phase numbers.
+   c. Update only the snapshot lines in the `CLAUDE.md` "Current
+      State" section (current phase number + name, status
+      `Not started`, other eligible phases). Do not copy the roadmap
+      into `CLAUDE.md` and do not change anything else in it.
+   d. If no phase is eligible, or the result is ambiguous, STOP and
+      ask the user instead of guessing.
+
+Report one of:
+- "✓ Roadmap — Phase <NN> marked Done; current phase now <MM>"
+- "✓ Roadmap — Phase <NN> partially complete; no status change"
+
 ## Step 5 — Generate commit message
 Generate a Conventional Commit message:
 - feat: new feature
@@ -95,6 +151,10 @@ locked decision from docs/FINAL-ARCHITECTURE-REVIEW.md the diff
 actually changes. If any line is LOCKED DECISION CHANGE, include:
 "LOCKED DECISION CHANGE — USER SIGN-OFF REQUIRED">
 
+
+## Roadmap
+<"Phase <NN> marked Done; current phase now <MM>" or
+"Phase <NN> partially complete; no status change">
 
 ## Changes
 <bullet list of every file changed with one line description each>
@@ -205,7 +265,9 @@ After a successful merge and cleanup, print:
 ✓ Remote branch deleted
 ✓ Switched to main
 ✓ Local branch deleted
-Next: run /create-spec for the next feature
+✓ Roadmap — <Phase NN marked Done | Phase NN unchanged (partial)>
+Next: run /create-spec for the next feature in the current phase
+(see CLAUDE.md "Current State" / docs/ROADMAP.md)
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
 
 ## Rules
@@ -223,3 +285,11 @@ Next: run /create-spec for the next feature
   "GitHub MCP is not connected. Run /mcp to check connection."
 - If push fails due to no upstream, use git push -u origin CURRENT_BRANCH
 - Never proceed to merge if PR creation fails
+- Mark a roadmap phase Done only when the phase is explicitly
+  complete (Step 4a); never because one feature shipped; if unsure,
+  ask
+- Never advance the current phase past unmet roadmap dependencies
+- Change `CLAUDE.md` only when the current phase changes — never
+  merely because a feature was merged
+- Roadmap/CLAUDE.md status changes go in the feature PR, never as a
+  separate commit on `main`

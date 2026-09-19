@@ -93,6 +93,9 @@ Stop and warn the user if:
   in `Feature-Scope.md` (a field existing in the Data Dictionary
   does NOT make it V1 — e.g. `GoogleReview.reply_text`).
 - A spec for this feature already exists in `.claude/specs/`.
+- You cannot confidently determine whether this feature completes the
+  entire roadmap phase (needed for the "Roadmap Phase" section in
+  Step 7). Ask the user before writing the spec — do not guess.
 
 Do not stop — but warn the user — if the feature would change a
 locked decision in `FINAL-ARCHITECTURE-REVIEW.md` or `Architecture.md`.
@@ -116,6 +119,25 @@ Every `docs/` file (with section) this spec is derived from.
 ## Depends on
 Which previous steps/specs must be complete (e.g. tenant core,
 seed data command, `Merchant`/`Location` models).
+
+## Roadmap Phase
+- Phase: <NN> — <phase name>
+- Completes entire phase: Yes / No
+- If No: remaining phase work: <brief description>
+
+Rules:
+- Phase number and name come from `docs/ROADMAP.md`, exactly.
+- Decide "Completes entire phase" only from the roadmap phase's
+  section and this feature's scope. Shipping one feature does not
+  by itself complete a phase.
+- If the phase has multiple independent pieces of work and this spec
+  covers only some, use `No` and briefly list the remaining roadmap
+  work for the phase.
+- Use `Yes` only if this feature is explicitly the final or only work
+  required for the phase.
+- This section never overrides `docs/ROADMAP.md` or its dependencies,
+  and does not mark the phase Done — `/ship-feature` verifies
+  completion and updates the roadmap.
 
 ## Locked decisions touched
 Every locked architectural decision from `docs/` that this feature
@@ -196,6 +218,9 @@ duplicate campaign execution, etc.) that this feature touches.
 ---
 
 ## Step 8 — Save the spec
+Before saving, confirm the spec contains every section in the Step 7
+structure, including "Roadmap Phase" and "Locked decisions touched".
+
 Save to: `.claude/specs/<step_number>-<feature_slug>.md`
 
 ## Step 9 — Report to the user
@@ -204,6 +229,7 @@ Print a short summary in this exact format:
 Branch:    <branch_name>
 Spec file: .claude/specs/<step_number>-<feature_slug>.md
 Title:     <feature_title>
+Phase:     <NN> — <phase name> (completes phase: Yes / No)
 ```
 
 If the spec contains `LOCKED DECISION CHANGE`, add this line:

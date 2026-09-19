@@ -25,8 +25,19 @@ for the reading order.
 
 ## Current State
 
-- Phase 00 has not started. No application code exists yet — do not
-  assume any app, model, manager, helper, or setting exists.
+`docs/ROADMAP.md` is the authoritative implementation progress
+tracker (phase names, numbers, dependencies, completion state). This
+section is only a snapshot of the current phase. It is NOT updated
+per feature or task — it changes only when the current roadmap phase
+changes, which `/ship-feature` handles when a phase is completed.
+
+- Current phase: **00 — Project scaffold & dev environment**
+- Status: Not started
+- Also eligible: none
+
+No application code exists yet — do not assume any app, model,
+manager, helper, or setting exists.
+
 - Before assuming a component exists, check its phase status in
   `docs/ROADMAP.md` and confirm the code is actually present.
 - Do not implement a later phase's feature unless the active spec in
@@ -334,4 +345,8 @@ above and in `docs/`):
    feature branch.
 5. `/ship-feature` — tests, commit, push, PR. Stops for explicit merge
    confirmation, then squash-merges and cleans up.
-6. Update the phase status in `docs/ROADMAP.md`.
+6. Phase status: `/ship-feature` marks a phase Done in
+   `docs/ROADMAP.md` (and advances the Current State snapshot above)
+   only when the shipped feature explicitly completes the whole phase.
+   The change travels in the same PR, so it reaches `main` only if
+   the PR is merged.
