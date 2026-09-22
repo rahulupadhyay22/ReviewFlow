@@ -31,10 +31,27 @@ class MerchantUpdateSerializer(serializers.Serializer):
 
 def session_body(team_member):
     return {
-        "user": {"id": str(team_member.user_id), "email": team_member.user.email},
+        "user": {
+            "id": str(team_member.user_id),
+            "email": team_member.user.email,
+            "totp_enabled": team_member.user.is_totp_enabled,
+        },
         "merchant": {"id": str(team_member.merchant_id), "name": team_member.merchant.name},
         "role": team_member.role,
     }
+
+
+class TotpCodeSerializer(serializers.Serializer):
+    code = serializers.CharField(trim_whitespace=False)
+
+
+class TotpSetupSerializer(serializers.Serializer):
+    password = serializers.CharField(trim_whitespace=False)
+
+
+class TotpDisableSerializer(serializers.Serializer):
+    password = serializers.CharField(trim_whitespace=False)
+    code = serializers.CharField(trim_whitespace=False)
 
 
 class TeamMemberUserSerializer(serializers.Serializer):

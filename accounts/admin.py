@@ -14,7 +14,10 @@ class UserCreationForm(AdminUserCreationForm):
 class UserEditForm(UserChangeForm):
     class Meta:
         model = User
-        fields = "__all__"
+        # Never render or accept the TOTP secret, replay counter or recovery
+        # hashes through admin (fields="__all__" would; exclude instead).
+        # totp_confirmed_at is shown read-only below.
+        exclude = ["totp_secret_encrypted", "totp_last_used_step", "totp_recovery_code_hashes"]
 
 # TeamMember is not registered: TenantScopedManager needs a tenant context,
 # so cross-tenant admin waits for the Phase 16 audited privileged path.
@@ -32,7 +35,10 @@ class UserAdmin(DjangoUserAdmin):
         (None, {"fields": ("email", "password")}),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
         ("Dates", {"fields": ("last_login",)}),
+        # Read-only: no staff reset path exists yet (Phase 16).
+        ("Two-factor", {"fields": ("totp_confirmed_at",)}),
     )
+    readonly_fields = ("totp_confirmed_at",)
     add_fieldsets = (
         (None, {"classes": ("wide",), "fields": ("email", "password1", "password2")}),
     )

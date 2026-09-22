@@ -42,7 +42,11 @@ def test_login_valid_credentials_returns_user_merchant_role_and_sets_session(log
     client, resp = login(member.user.email)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["user"] == {"id": str(member.user_id), "email": member.user.email}
+    assert body["user"] == {
+        "id": str(member.user_id),
+        "email": member.user.email,
+        "totp_enabled": False,
+    }
     assert body["merchant"] == {"id": str(member.merchant_id), "name": member.merchant.name}
     assert body["role"] == "OWNER"
     assert "sessionid" in client.cookies

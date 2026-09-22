@@ -27,6 +27,8 @@ EXPECTED_REQUIREMENTS = {
     "pytest==9.1.1",
     "pytest-django==4.14.0",
     "djangorestframework==3.18.1",
+    "pyotp==2.10.0",
+    "cryptography==50.0.1",
 }
 
 DOC_FILES_REQUIRING_CONFIG_CELERY = [

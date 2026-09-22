@@ -1,7 +1,12 @@
+import hashlib
+import hmac
+import re
+import secrets
 import uuid
 import zoneinfo
 from datetime import datetime, timedelta
 
+import pyotp
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -15,12 +20,18 @@ from accounts.exceptions import (
     AlreadyMember,
     InvalidCredentials,
     InvalidInvite,
+    InvalidTotpCode,
     LastOwner,
+    ReauthenticationFailed,
     TeamMemberNotFound,
     TeamPermissionDenied,
+    TotpAlreadyEnabled,
+    TotpNotEnabled,
+    TotpSetupRequired,
 )
 from accounts.models import Merchant, TeamMember, User, UserManager
 from auditlog.services import record
+from core.crypto import decrypt, encrypt
 from core.tenancy import get_current_merchant_id, tenant_atomic, tenant_context, user_lookup_atomic
 
 _UNSET = object()
@@ -34,6 +45,18 @@ AUDIT_ACCEPTED = "team_member.accepted"
 
 INVITE_MAX_AGE = timedelta(days=7)
 _invite_signer = TimestampSigner(salt="accounts.invite")
+
+# Two-factor (TOTP) audit actions and tuning constants.
+AUDIT_TOTP_ENABLED = "user.totp_enabled"
+AUDIT_TOTP_DISABLED = "user.totp_disabled"
+AUDIT_TOTP_RECOVERY_USED = "user.totp_recovery_code_used"
+
+TOTP_PENDING_MAX_AGE = timedelta(minutes=5)
+TOTP_MAX_ATTEMPTS = 5
+RECOVERY_CODE_COUNT = 10
+TOTP_ISSUER = "ReviewFlow"
+
+_TOTP_CODE_RE = re.compile(r"^[0-9]{6}$")
 
 
 def validate_timezone(value: str) -> None:
@@ -101,6 +124,15 @@ def authenticate_login(*, request: HttpRequest | None, email: str, password: str
     if membership is None:
         raise InvalidCredentials()
     return membership
+
+
+def begin_login(*, request: HttpRequest | None, email: str, password: str) -> tuple[TeamMember, bool]:
+    """Step 1 of login. Checks the password and membership exactly like
+    authenticate_login (same generic InvalidCredentials), and additionally
+    reports whether the user has TOTP enabled. Does not log the user in —
+    the view decides between calling login() and storing a pending marker."""
+    membership = authenticate_login(request=request, email=email, password=password)
+    return membership, membership.user.is_totp_enabled
 
 
 def get_active_membership(user: User) -> TeamMember | None:
@@ -352,3 +384,239 @@ def accept_invite(*, token: str, password: str) -> None:
         member.accepted_at = dj_timezone.now()
         member.save(update_fields=["accepted_at", "updated_at"])
         record(AUDIT_ACCEPTED, actor=user, target=member)
+
+
+# --- Two-factor authentication (TOTP) ---------------------------------------
+#
+# User is GLOBAL (no merchant_id, no RLS), so every lock below is a plain
+# select_for_update() on the User row, never tenant_atomic() on its own —
+# tenant_atomic() must be the outermost transaction of a tenant context
+# (core.tenancy), so it is only opened where a tenant context already
+# exists: setup/confirm/disable run inside an authenticated request, which
+# TenantMiddleware has already wrapped in tenant_context()+tenant_atomic();
+# login step 2 is pre-tenant and opens its own tenant_context()+tenant_atomic()
+# for exactly this lock, after resolving which merchant that is.
+
+
+def _lock_user(user_id: uuid.UUID) -> User:
+    return User.objects.select_for_update().get(pk=user_id)
+
+
+def _normalize_recovery_code(code: str) -> str:
+    return code.strip().lower().replace("-", "")
+
+
+def _hash_recovery_code(code: str) -> str:
+    return hashlib.sha256(_normalize_recovery_code(code).encode()).hexdigest()
+
+
+def _verify_totp(user: User, code: str, now: datetime) -> bool:
+    """Requires the caller to hold the User row lock. Tries the current time
+    step and one step either side (clock drift), rejecting any step at or
+    before totp_last_used_step (replay protection). Persists the accepted
+    step on success. `now` must be an aware datetime (pyotp reads a naive
+    datetime or an int timestamp as local time, not UTC)."""
+    if not user.totp_secret_encrypted:
+        return False
+    totp = pyotp.TOTP(decrypt(user.totp_secret_encrypted))
+    last_used = user.totp_last_used_step if user.totp_last_used_step is not None else -1
+    for offset in (-1, 0, 1):
+        step = totp.timecode(now) + offset
+        if step <= last_used:
+            continue
+        if hmac.compare_digest(totp.at(now, counter_offset=offset), code):
+            user.totp_last_used_step = step
+            user.save(update_fields=["totp_last_used_step"])
+            return True
+    return False
+
+
+def _consume_recovery_code(user: User, code: str) -> bool:
+    """Requires the caller to hold the User row lock. Removes the matching
+    hash so it can never be reused."""
+    target = _hash_recovery_code(code)
+    hashes = user.totp_recovery_code_hashes or []
+    for stored in hashes:
+        if hmac.compare_digest(stored, target):
+            user.totp_recovery_code_hashes = [h for h in hashes if h != stored]
+            user.save(update_fields=["totp_recovery_code_hashes"])
+            return True
+    return False
+
+
+def _verify_second_factor(user: User, code: str, now: datetime) -> str | None:
+    """Requires the caller to hold the User row lock. Tries a TOTP code
+    first, then a recovery code. Returns "totp", "recovery" or None."""
+    candidate = code.strip() if isinstance(code, str) else ""
+    if _TOTP_CODE_RE.match(candidate) and _verify_totp(user, candidate, now):
+        return "totp"
+    if _consume_recovery_code(user, code):
+        return "recovery"
+    return None
+
+
+def _generate_recovery_codes() -> tuple[list[str], list[str]]:
+    """Returns (plaintext codes shown once, their stored hashes)."""
+    plaintext, hashes = [], []
+    for _ in range(RECOVERY_CODE_COUNT):
+        raw = secrets.token_hex(10)  # 80 bits, 20 lowercase hex chars
+        plaintext.append("-".join(raw[i : i + 5] for i in range(0, len(raw), 5)))
+        hashes.append(_hash_recovery_code(raw))
+    return plaintext, hashes
+
+
+def make_pending_totp(user: User) -> dict:
+    """The only thing step 1 stores in the session for an enrolled user: no
+    _auth_user_id, no merchant_id. n counts failed step-2 attempts."""
+    return {"u": str(user.id), "iat": dj_timezone.now().timestamp(), "n": 0}
+
+
+def record_failed_totp_attempt(pending: dict) -> dict | None:
+    """Returns the marker with n incremented, or None once the attempt cap
+    is reached (the view then deletes the marker, forcing step 1 again).
+
+    ponytail: the count lives in the session and is updated without a lock,
+    so parallel step-2 requests on one session can each read the same n and
+    land more than TOTP_MAX_ATTEMPTS guesses before the marker dies.
+    Accepted because a marker only exists after the correct password, it
+    expires after TOTP_PENDING_MAX_AGE (5 minutes), and a TOTP code has a
+    10**6 search space. The login_totp throttle does NOT bound this: it is
+    per IP, so parallel requests from many IPs against one marker each get
+    their own allowance. A throttle keyed to the pending user (pending["u"])
+    would close that gap; a row-locked counter would close the race."""
+    n = pending.get("n", 0) + 1
+    if n >= TOTP_MAX_ATTEMPTS:
+        return None
+    return {**pending, "n": n}
+
+
+def complete_totp_login(*, pending: dict | None, code: str) -> TeamMember:
+    """Step 2 of login. Raises InvalidCredentials for every failure reason:
+    no/expired/exhausted marker, unknown/inactive user, no active membership,
+    membership revoked/changed concurrently, 2FA disabled concurrently, or a
+    wrong/replayed code. See spec 02-totp-2fa.md, "step-2 auth race", for why
+    the membership and the user are re-locked here rather than trusted from
+    resolve_login_membership()."""
+    # Not dead code: LoginTotpView normally deletes the marker once the cap is
+    # hit, but the counter is a plain read-modify-write on the session (see
+    # record_failed_totp_attempt), so a stale or concurrently-written marker
+    # can still arrive here with n at the cap.
+    if not pending or pending.get("n", 0) >= TOTP_MAX_ATTEMPTS:
+        raise InvalidCredentials()
+    iat = pending.get("iat")
+    if iat is None or dj_timezone.now().timestamp() - iat > TOTP_PENDING_MAX_AGE.total_seconds():
+        raise InvalidCredentials()
+    try:
+        user_id = uuid.UUID(pending["u"])
+    except (KeyError, ValueError, TypeError):
+        raise InvalidCredentials() from None
+
+    try:
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        raise InvalidCredentials() from None
+    if not user.is_active:
+        raise InvalidCredentials()
+
+    # Unlocked and already committed by the time this returns — used only to
+    # discover which merchant's tenant context to open next. Never trusted
+    # for the login decision itself.
+    membership = resolve_login_membership(user)
+    if membership is None:
+        raise InvalidCredentials()
+
+    with tenant_context(membership.merchant_id), tenant_atomic():
+        try:
+            member = (
+                TeamMember.objects.select_related("merchant", "user")
+                .select_for_update(of=("self",))
+                .get(
+                    pk=membership.pk,
+                    user_id=user_id,
+                    accepted_at__isnull=False,
+                    merchant__status=Merchant.Status.ACTIVE,
+                )
+            )
+        except TeamMember.DoesNotExist:
+            raise InvalidCredentials() from None
+
+        locked_user = _lock_user(user_id)
+        if not locked_user.is_active or not locked_user.is_totp_enabled:
+            raise InvalidCredentials()
+
+        factor = _verify_second_factor(locked_user, code, dj_timezone.now())
+        if factor is None:
+            raise InvalidCredentials()
+        if factor == "recovery":
+            record(
+                AUDIT_TOTP_RECOVERY_USED,
+                actor=locked_user,
+                target=locked_user,
+                metadata={"recovery_codes_remaining": len(locked_user.totp_recovery_code_hashes)},
+            )
+        return member
+
+
+def begin_totp_setup(*, user: User, password: str) -> tuple[str, str]:
+    """Starts (or restarts) enrollment. Raises ReauthenticationFailed for a
+    wrong password, TotpAlreadyEnabled if already enrolled. Returns
+    (secret, otpauth_uri); no audit row, since nothing is enabled yet."""
+    with tenant_atomic():
+        locked = _lock_user(user.id)
+        if not locked.check_password(password):
+            raise ReauthenticationFailed()
+        if locked.is_totp_enabled:
+            raise TotpAlreadyEnabled()
+        secret = pyotp.random_base32()
+        locked.totp_secret_encrypted = encrypt(secret)
+        locked.save(update_fields=["totp_secret_encrypted"])
+        email = locked.email
+    uri = pyotp.TOTP(secret, issuer=TOTP_ISSUER).provisioning_uri(name=email)
+    return secret, uri
+
+
+def confirm_totp_setup(*, user: User, code: str) -> list[str]:
+    """Finishes enrollment. Raises TotpAlreadyEnabled, TotpSetupRequired (no
+    pending secret) or InvalidTotpCode. Returns the plaintext recovery codes,
+    shown once and never retrievable again."""
+    with tenant_atomic():
+        locked = _lock_user(user.id)
+        if locked.is_totp_enabled:
+            raise TotpAlreadyEnabled()
+        if not locked.totp_secret_encrypted:
+            raise TotpSetupRequired()
+        if not _verify_totp(locked, code, dj_timezone.now()):
+            raise InvalidTotpCode()
+        plaintext_codes, hashes = _generate_recovery_codes()
+        locked.totp_confirmed_at = dj_timezone.now()
+        locked.totp_recovery_code_hashes = hashes
+        locked.save(update_fields=["totp_confirmed_at", "totp_recovery_code_hashes"])
+        record(AUDIT_TOTP_ENABLED, actor=locked, target=locked)
+        return plaintext_codes
+
+
+def disable_totp(*, user: User, password: str, code: str) -> None:
+    """Turns 2FA off. Raises TotpNotEnabled if not enrolled. A wrong
+    password or a wrong/replayed code both raise the same
+    ReauthenticationFailed (no factor enumeration)."""
+    with tenant_atomic():
+        locked = _lock_user(user.id)
+        if not locked.is_totp_enabled:
+            raise TotpNotEnabled()
+        if not locked.check_password(password):
+            raise ReauthenticationFailed()
+        if _verify_second_factor(locked, code, dj_timezone.now()) is None:
+            raise ReauthenticationFailed()
+        locked.totp_secret_encrypted = None
+        locked.totp_confirmed_at = None
+        locked.totp_last_used_step = None
+        locked.totp_recovery_code_hashes = []
+        locked.save(
+            update_fields=[
+                "totp_secret_encrypted",
+                "totp_confirmed_at",
+                "totp_last_used_step",
+                "totp_recovery_code_hashes",
+            ]
+        )
+        record(AUDIT_TOTP_DISABLED, actor=locked, target=locked)
