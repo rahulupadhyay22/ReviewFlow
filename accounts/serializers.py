@@ -61,10 +61,16 @@ class TeamMemberUserSerializer(serializers.Serializer):
 
 class TeamMemberSerializer(serializers.ModelSerializer):
     user = TeamMemberUserSerializer()
+    location_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = TeamMember
-        fields = ["id", "user", "role", "invited_at", "accepted_at"]
+        fields = ["id", "user", "role", "invited_at", "accepted_at", "location_ids"]
+
+    def get_location_ids(self, member):
+        # Relies on list_team_members()'s prefetch_related("location_assignments")
+        # to avoid N+1 queries.
+        return [str(a.location_id) for a in member.location_assignments.all()]
 
 
 class TeamMemberInviteSerializer(serializers.Serializer):
@@ -74,6 +80,10 @@ class TeamMemberInviteSerializer(serializers.Serializer):
 
 class TeamMemberRoleSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=TeamMember.Role.choices)
+
+
+class TeamMemberLocationsSerializer(serializers.Serializer):
+    location_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=True)
 
 
 class AcceptInviteSerializer(serializers.Serializer):

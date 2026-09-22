@@ -79,25 +79,35 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ## Locations
 
+Location body: `{ id, name, address, phone, timezone, is_active, created_at, updated_at }`.
+
 ### `GET /locations`
 - **Permissions**: any role (VIEWER read-only; MANAGER sees only assigned locations)
-- **Pagination**: cursor-based, default page size 25
-- **Response**: `200 { results: [Location], next_cursor }`
+- **Pagination**: cursor-based, default page size 25, `?cursor=`/`?limit=` (max 100)
+- **Response**: `200 { results: [Location], next_cursor }`. `next_cursor` is `null` on the last page.
+- Lists both active and inactive locations, each with its `is_active` value. There is no `?is_active` filter.
 
 ### `POST /locations`
 - **Permissions**: OWNER, ADMIN
 - **Request**: `{ name, address?, phone?, timezone? }`
-- **Errors**: `422` missing `name`
+- **Response**: `201` with the Location body. `is_active` is always `true` on create.
+- **Errors**: `422` missing/blank `name`, an invalid IANA `timezone`, or an over-length field
+- Any `merchant_id`, `id` or `is_active` in the request body is ignored.
 
 ### `GET /locations/{id}`
-- **Errors**: `404` if not found or belongs to another merchant (never `403` — don't reveal existence across tenants)
+- **Errors**: `404` if not found, belongs to another merchant, or (for a MANAGER) is not assigned to the caller — never `403` in any of these cases, so a response never reveals cross-tenant existence or another team member's assignment scope
 
 ### `PATCH /locations/{id}`
 - **Permissions**: OWNER, ADMIN, or MANAGER assigned to this location
+- **Request**: partial `{ name?, address?, phone?, timezone? }`. `address`, `phone` and `timezone` accept `null` to clear the value. `is_active` is not writable here.
+- **Response**: `200` with the Location body.
+- **Errors**: `404` as for `GET /locations/{id}` — a MANAGER not assigned to this location gets `404`, not `403`; `422` for validation errors
 
 ### `DELETE /locations/{id}`
 - **Permissions**: OWNER, ADMIN
-- **Behavior**: soft-delete (`is_active = False`); does not cascade-delete historical transactions/executions
+- **Behavior**: soft-delete (`is_active = False`); does not cascade-delete historical transactions/executions, and does not delete or change any `TeamMemberLocation` assignment
+- **Response**: `204`. Idempotent — deleting an already-inactive location returns `204` again and changes nothing.
+- There is no reactivation endpoint.
 
 ---
 
@@ -179,10 +189,11 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ## Team
 
-Member body: `{ id, user: { id, email }, role, invited_at, accepted_at }`.
-There is no `locations` field yet — assigned locations for `MANAGER`
-(read from `TeamMemberLocation`) arrive with Phase 03. A `MANAGER`
-invited before then has no location assignment until Phase 03.
+Member body: `{ id, user: { id, email }, role, invited_at, accepted_at, location_ids }`.
+`location_ids` is a list of assigned `Location` ids (read from
+`TeamMemberLocation`) and is `[]` for every non-`MANAGER` role. A `MANAGER`
+starts with no location assignment until an OWNER/ADMIN sets one with
+`PUT /team-members/{id}/locations` below.
 
 ### `GET /team-members`
 - **Permissions**: OWNER, ADMIN only
@@ -199,7 +210,7 @@ invited before then has no location assignment until Phase 03.
 - **Permissions**: OWNER, ADMIN only
 - **Request**: `{ role }`
 - **Response**: `200` with the member body
-- **Rules**: nobody can change their own role. Only an OWNER can change an OWNER's role or grant the OWNER role. The last accepted OWNER is protected by these rules: self role change and self revoke are `403`, and only an accepted OWNER can target another OWNER, so an OWNER always remains. There is no reachable `409` for this.
+- **Rules**: nobody can change their own role. Only an OWNER can change an OWNER's role or grant the OWNER role. The last accepted OWNER is protected by these rules: self role change and self revoke are `403`, and only an accepted OWNER can target another OWNER, so an OWNER always remains. There is no reachable `409` for this. A role change **away from** `MANAGER` deletes the member's `TeamMemberLocation` assignments in the same transaction; a later change back to `MANAGER` starts with `location_ids: []`.
 - **Errors**: `404` if `{id}` is not a member of the current merchant (never `403`, to avoid revealing cross-tenant existence); `403 team_permission_denied` for the self/OWNER rules above; `422` for an invalid role
 
 ### `DELETE /team-members/{id}` (revoke)
@@ -208,9 +219,13 @@ invited before then has no location assignment until Phase 03.
 - **Rules**: same self/OWNER rules as the role change above, which also protect the last OWNER.
 - **Errors**: `404`, `403 team_permission_denied` — same meanings as `PATCH` above
 
-### `PUT /team-members/{id}/locations` (set assigned locations, MANAGER only)
-- **Request**: `{ location_ids: [...] }`
-- **Validation**: every `location_id` must belong to the same merchant as the team member — rejected with `422` otherwise (this is the API-level surface of the `TeamMemberLocation` invariant in `../02-architecture/Multi-Tenancy.md`)
+### `PUT /team-members/{id}/locations` (set assigned locations, target must be MANAGER)
+- **Permissions**: OWNER, ADMIN only
+- **Request**: `{ location_ids: [uuid, ...] }`
+- **Behavior**: replaces the member's assignment set atomically (not a merge). An empty list clears it; duplicate ids are collapsed. The target may be pending (not yet accepted). Inactive locations may be assigned.
+- **Response**: `200` with the member body, including the updated `location_ids`.
+- **Validation**: every `location_id` must belong to the same merchant as the team member — rejected with `422` otherwise (this is the API-level surface of the `TeamMemberLocation` invariant in `../02-architecture/Multi-Tenancy.md`). An unknown `location_id` and a cross-merchant `location_id` return the identical `422` body, so a response never reveals whether a location exists in another merchant.
+- **Errors**: `403 team_permission_denied` for MANAGER/VIEWER actors; `404` if `{id}` is not a member of the current merchant (never `403`); `422` if the target's role is not `MANAGER`, if any `location_id` is unknown/cross-merchant, or for a malformed UUID
 
 ---
 

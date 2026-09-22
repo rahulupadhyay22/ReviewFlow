@@ -68,7 +68,28 @@ celery -A config beat -l info
 
 ## Seed Data
 
-For local development, a management command should create: one test `Merchant` with 2+ `Location`s, a `SHARED_POOL` `WhatsAppAccount` fixture (no real Meta credentials needed for most local work — mock the provider in tests), and a `Plan`/`Subscription` pair. Build this command early (Phase 0 of the roadmap) since almost every other feature needs a merchant + location to exist.
+```bash
+python manage.py seed_dev [--password <pw>]
+```
+
+Creates one test `Merchant` ("Seed Cafe") with an accepted OWNER, 2 active
+`Location`s, and an accepted `MANAGER` assigned to the first location — enough
+for MANAGER location scoping and every other Phase 03+ feature that needs a
+merchant + location to exist. It goes through the ordinary service functions
+(`create_merchant_with_owner`, `create_location`, `invite_team_member`,
+`accept_invite`, `set_team_member_locations`), never raw ORM writes.
+
+- **`DEBUG`-only**: refuses to run (raises `CommandError`, writes nothing)
+  unless `settings.DEBUG` is true.
+- **Idempotent**: if the seed owner (`owner@seed.reviewflow.local`) already
+  exists, it prints "already seeded" and exits without creating anything new.
+- **Password**: `--password` if given, else a random one generated with
+  `secrets.token_urlsafe`. Printed once to stdout, never hardcoded or logged
+  elsewhere.
+
+The `SHARED_POOL` `WhatsAppAccount` fixture (Phase 08) and the
+`Plan`/`Subscription` pair (Phase 07) are not created by this command yet —
+those later phases extend it.
 
 ## Testing Locally
 

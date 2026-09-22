@@ -15,6 +15,7 @@ from accounts.serializers import (
     MerchantSerializer,
     MerchantUpdateSerializer,
     TeamMemberInviteSerializer,
+    TeamMemberLocationsSerializer,
     TeamMemberRoleSerializer,
     TeamMemberSerializer,
     TotpCodeSerializer,
@@ -210,6 +211,18 @@ class TeamMemberDetailView(APIView):
     def delete(self, request, pk):
         services.revoke_team_member(actor=request.team_member, member_id=pk)
         return Response(status=204)
+
+
+class TeamMemberLocationsView(APIView):
+    permission_classes = [IsOwnerOrAdmin]
+
+    def put(self, request, pk):
+        serializer = TeamMemberLocationsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        member = services.set_team_member_locations(
+            actor=request.team_member, member_id=pk, **serializer.validated_data
+        )
+        return Response(TeamMemberSerializer(member).data)
 
 
 class InviteAcceptRateThrottle(AnonRateThrottle):
