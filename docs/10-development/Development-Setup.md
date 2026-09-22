@@ -29,6 +29,8 @@ services:
 
 `POSTGRES_USER` is a superuser and is for manual admin only. `docker/postgres/init/01-app-role.sql` creates `reviewflow_app` (no superuser, no `BYPASSRLS`; `CREATEDB` only for the test database), which the application connects as so RLS applies (see `../02-architecture/Multi-Tenancy.md` §"No Standing Privileged Role"). Init scripts run only on a fresh data directory: after pulling this change, run `docker compose down` then `docker compose up -d`, then `python manage.py migrate`.
 
+**One-time reset for the custom user model (Phase 02).** `AUTH_USER_MODEL = "accounts.User"` cannot be applied to a database where `auth` already migrated. Reset a pre-Phase-02 local database once — `docker compose exec postgres psql -U reviewflow -d postgres -c "DROP DATABASE reviewflow;" -c "CREATE DATABASE reviewflow OWNER reviewflow_app;"` (or `docker compose down` + `docker compose up -d`) — then `python manage.py migrate`. Set `DJANGO_SECURE_COOKIES=False` in `.env` for local http.
+
 ## Environment Variables
 
 See `../02-architecture/Security-Architecture.md` for what must never be committed. Minimum local `.env`:

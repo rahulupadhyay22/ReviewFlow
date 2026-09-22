@@ -32,8 +32,13 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework",
     "core",
+    "accounts",
+    "auditlog",
 ]
+
+AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -41,6 +46,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "accounts.middleware.SessionMerchantMiddleware",
     "core.middleware.TenantMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -80,6 +86,32 @@ USE_TZ = True
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Dashboard auth: session + CSRF only (Authentication.md §1).
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsMerchantMember"],
+    "EXCEPTION_HANDLER": "core.api.exception_handler",
+    "DEFAULT_THROTTLE_RATES": {"login": "5/min"},
+    # Trusted reverse proxies in front of the app. DRF throttles key on
+    # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
+    # X-Forwarded-For entry. Never leave it unset: DRF would then trust the
+    # whole client-supplied X-Forwarded-For header, letting a rotating value
+    # bypass the login throttle. Set it to the real proxy hop count per
+    # environment (Cloudflare -> Render) at deploy time.
+    "NUM_PROXIES": env.int("DJANGO_NUM_PROXIES", default=0),
+}
+
+# Redis cache holds rate-limit counters only, never business data.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
+        "KEY_PREFIX": "rf",
+    }
+}
+
+SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = env.bool("DJANGO_SECURE_COOKIES", default=True)
 
 # Celery (SAD.md §5). Redis is broker/result backend only.
 CELERY_BROKER_URL = REDIS_URL

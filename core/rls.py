@@ -32,6 +32,23 @@ def rls_direct(table):
     return _tenant_policy(table, f"merchant_id = {CURRENT_MERCHANT}")
 
 
+CURRENT_USER = "NULLIF(current_setting('app.current_user_id', true), '')::uuid"
+
+
+def rls_select_by_user(table, user_column="user_id"):
+    """SELECT-only self_membership policy (login lookup, see
+    core.tenancy.user_lookup_atomic). Run after rls_direct(), which enables
+    and forces RLS. Never add a write policy keyed on app.current_user_id.
+    """
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY self_membership ON {table} FOR SELECT "
+            f"USING ({user_column} = {CURRENT_USER});"
+        ),
+        reverse_sql=f"DROP POLICY self_membership ON {table};",
+    )
+
+
 def rls_via_parent(table, fk_column, parent_table):
     """Policy for tables reaching the tenant through a parent FK.
 

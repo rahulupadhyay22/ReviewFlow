@@ -26,6 +26,7 @@ EXPECTED_REQUIREMENTS = {
     "django-environ==0.14.0",
     "pytest==9.1.1",
     "pytest-django==4.14.0",
+    "djangorestframework==3.18.1",
 }
 
 DOC_FILES_REQUIRING_CONFIG_CELERY = [
@@ -98,7 +99,7 @@ def test_timezone_settings():
 # ---------------------------------------------------------------------------
 
 
-def test_requirements_pins_exactly_the_six_direct_dependencies():
+def test_requirements_pins_exactly_the_approved_direct_dependencies():
     lines = (BASE_DIR / "requirements.txt").read_text(encoding="utf-8").splitlines()
     parsed = {line.strip() for line in lines if line.strip() and not line.strip().startswith("#")}
     assert parsed == EXPECTED_REQUIREMENTS

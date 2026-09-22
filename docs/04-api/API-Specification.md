@@ -8,11 +8,15 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ## Auth
 
-### `POST /auth/login`
+### `GET /auth/login`
 - **Auth**: none
+- **Response**: `204`; sets the `csrftoken` cookie so the frontend can send `X-CSRFToken` on its first POST
+
+### `POST /auth/login`
+- **Auth**: none; CSRF required
 - **Request**: `{ email, password }`
-- **Response**: `200 { user, session }` or sets session cookie
-- **Errors**: `401` invalid credentials, `429` too many attempts
+- **Response**: `200 { user: { id, email }, merchant: { id, name }, role }` and sets the session cookie
+- **Errors**: `401` invalid credentials (one generic response for every failure reason), `403` missing CSRF token, `429` too many attempts (per-IP)
 
 ### `POST /auth/logout`
 - **Auth**: session required
@@ -20,7 +24,7 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ### `POST /auth/refresh`
 - **Auth**: session required (if using short-lived session tokens)
-- **Response**: `200` refreshed session state
+- **Response**: `200` refreshed session state (same body as login); the session expiry is extended
 
 ---
 
