@@ -4,7 +4,9 @@ import re
 import secrets
 import uuid
 import zoneinfo
+from collections.abc import Iterable
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 import pyotp
 from django.contrib.auth import authenticate
@@ -29,10 +31,13 @@ from accounts.exceptions import (
     TotpNotEnabled,
     TotpSetupRequired,
 )
-from accounts.models import Merchant, TeamMember, User, UserManager
+from accounts.models import Merchant, TeamMember, TeamMemberLocation, User, UserManager
 from auditlog.services import record
 from core.crypto import decrypt, encrypt
 from core.tenancy import get_current_merchant_id, tenant_atomic, tenant_context, user_lookup_atomic
+
+if TYPE_CHECKING:
+    from locations.models import Location
 
 _UNSET = object()
 
@@ -42,6 +47,7 @@ AUDIT_INVITED = "team_member.invited"
 AUDIT_ROLE_CHANGED = "team_member.role_changed"
 AUDIT_REMOVED = "team_member.removed"
 AUDIT_ACCEPTED = "team_member.accepted"
+AUDIT_LOCATIONS_CHANGED = "team_member.locations_changed"
 
 INVITE_MAX_AGE = timedelta(days=7)
 _invite_signer = TimestampSigner(salt="accounts.invite")
@@ -240,7 +246,11 @@ def _lock_target(member_id: uuid.UUID | str) -> TeamMember:
 
 
 def list_team_members() -> QuerySet[TeamMember]:
-    return TeamMember.objects.select_related("user").order_by("created_at")
+    return (
+        TeamMember.objects.select_related("user")
+        .prefetch_related("location_assignments")
+        .order_by("created_at")
+    )
 
 
 def invite_team_member(*, actor: TeamMember, email: str, role: str) -> tuple[TeamMember, str]:
@@ -306,6 +316,10 @@ def change_team_member_role(*, actor: TeamMember, member_id: uuid.UUID | str, ro
         role_from = member.role
         member.role = role
         member.save(update_fields=["role", "updated_at"])
+        if role_from == TeamMember.Role.MANAGER and role != TeamMember.Role.MANAGER:
+            # A former MANAGER's assignments never silently carry over if
+            # they become a MANAGER again later (this spec's "Decisions").
+            TeamMemberLocation.objects.filter(team_member=member).delete()
         record(
             AUDIT_ROLE_CHANGED,
             actor=actor.user,
@@ -326,6 +340,68 @@ def revoke_team_member(*, actor: TeamMember, member_id: uuid.UUID | str) -> None
 
         record(AUDIT_REMOVED, actor=actor.user, target=member, metadata={"role": member.role})
         member.delete()
+
+
+def _assert_same_merchant(member: TeamMember, locations: Iterable["Location"]) -> None:
+    """The documented three-way invariant (Multi-Tenancy.md §"Two Points
+    Hardened"), checked explicitly: RLS filters TeamMemberLocation by its
+    own merchant_id, it does not independently prove equality against both
+    referenced parent rows. This must run before every insert, and must not
+    rely on the scoped read having already filtered `locations`."""
+    merchant_id = get_current_merchant_id()
+    bad = ValidationError({"location_ids": ["One or more locations were not found."]})
+    if member.merchant_id != merchant_id:
+        raise bad
+    for location in locations:
+        if location.merchant_id != merchant_id:
+            raise bad
+
+
+def set_team_member_locations(
+    *, actor: TeamMember, member_id: uuid.UUID | str, location_ids: list[uuid.UUID]
+) -> TeamMember:
+    """Replaces a MANAGER's assigned-location set atomically. An empty list
+    clears it. The target must be a MANAGER; any other role is 422."""
+    from locations.models import Location  # local import: avoids an accounts<->locations cycle
+
+    with tenant_atomic():
+        actor = _lock_team(actor)
+        if actor.role not in (TeamMember.Role.OWNER, TeamMember.Role.ADMIN):
+            raise TeamPermissionDenied()
+        member = _lock_target(member_id)
+
+        if member.role != TeamMember.Role.MANAGER:
+            raise ValidationError(
+                {"location_ids": ["Only MANAGER team members can be assigned locations."]}
+            )
+
+        wanted = set(location_ids)
+        locations = list(Location.objects.filter(pk__in=wanted))
+        if len(locations) != len(wanted):
+            raise ValidationError({"location_ids": ["One or more locations were not found."]})
+        _assert_same_merchant(member, locations)
+
+        current = set(
+            TeamMemberLocation.objects.filter(team_member=member).values_list("location_id", flat=True)
+        )
+        if current == wanted:
+            return member  # no-op: no audit row
+
+        TeamMemberLocation.objects.filter(team_member=member, location_id__in=current - wanted).delete()
+        TeamMemberLocation.objects.bulk_create(
+            [
+                TeamMemberLocation(merchant_id=member.merchant_id, team_member=member, location=location)
+                for location in locations
+                if location.pk in wanted - current
+            ]
+        )
+        record(
+            AUDIT_LOCATIONS_CHANGED,
+            actor=actor.user,
+            target=member,
+            metadata={"location_ids": sorted(str(loc_id) for loc_id in wanted)},
+        )
+        return member
 
 
 def accept_invite(*, token: str, password: str) -> None:

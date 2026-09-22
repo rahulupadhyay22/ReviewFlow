@@ -121,7 +121,7 @@ def test_patch_and_delete_team_member_return_403_when_unauthenticated(make_merch
 # --- GET list ---------------------------------------------------------------
 
 
-def test_get_team_members_returns_only_current_merchant_pending_and_accepted_no_locations(
+def test_get_team_members_returns_only_current_merchant_pending_and_accepted_with_location_ids(
     make_merchant, add_member, session_client
 ):
     a = make_merchant()
@@ -142,8 +142,8 @@ def test_get_team_members_returns_only_current_merchant_pending_and_accepted_no_
     assert str(pending.pk) in ids
     assert str(b.pk) not in ids
     for m in body["results"]:
-        assert "locations" not in m
-        assert set(m) == {"id", "user", "role", "invited_at", "accepted_at"}
+        assert set(m) == {"id", "user", "role", "invited_at", "accepted_at", "location_ids"}
+        assert m["location_ids"] == []
 
 
 # --- POST invite -------------------------------------------------------------

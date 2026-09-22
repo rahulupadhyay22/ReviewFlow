@@ -122,3 +122,29 @@ class TeamMember(BaseModel):
         constraints = [
             models.UniqueConstraint(fields=["merchant", "user"], name="uniq_teammember_merchant_user"),
         ]
+
+
+class TeamMemberLocation(BaseModel):
+    """Explicit through-model assigning a TeamMember (MANAGER role) to
+    specific Locations (Multi-Tenancy.md §"Two Points Hardened"). merchant_id
+    must equal both team_member.merchant_id and location.merchant_id -- this
+    is enforced by the service layer (accounts.services._assert_same_merchant),
+    not just by RLS: RLS filters this row by its own merchant_id, it does not
+    prove equality against both referenced parent rows."""
+
+    merchant = models.ForeignKey(Merchant, on_delete=models.PROTECT, related_name="+")
+    team_member = models.ForeignKey(
+        TeamMember, on_delete=models.CASCADE, related_name="location_assignments"
+    )
+    location = models.ForeignKey(
+        "locations.Location", on_delete=models.PROTECT, related_name="team_member_assignments"
+    )
+
+    objects = TenantScopedManager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["team_member", "location"], name="uniq_teammemberlocation_member_location"
+            ),
+        ]

@@ -18,4 +18,9 @@ urlpatterns = [
         views.TeamMemberDetailView.as_view(),
         name="team-member-detail",
     ),
+    path(
+        "team-members/<uuid:pk>/locations",
+        views.TeamMemberLocationsView.as_view(),
+        name="team-member-locations",
+    ),
 ]

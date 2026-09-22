@@ -1,5 +1,8 @@
 """Role permission classes (Security-Architecture.md §Authorization).
-MANAGER location scoping arrives with TeamMemberLocation in Phase 03."""
+MANAGER location scoping (which locations, not just the role gate) lives in
+locations.services.accessible_locations, not here: a permission class
+cannot see the target's assignment before the object is loaded (same
+precedent as accounts.services._check_can_manage for team-member targets)."""
 from rest_framework.permissions import BasePermission
 
 from accounts import services
@@ -30,3 +33,7 @@ class IsOwner(HasRole):
 
 class IsOwnerOrAdmin(HasRole):
     roles = frozenset({TeamMember.Role.OWNER, TeamMember.Role.ADMIN})
+
+
+class IsOwnerAdminOrManager(HasRole):
+    roles = frozenset({TeamMember.Role.OWNER, TeamMember.Role.ADMIN, TeamMember.Role.MANAGER})
