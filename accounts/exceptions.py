@@ -63,3 +63,54 @@ class TeamMemberNotFound(ReviewFlowError):
 
     def __init__(self):
         super().__init__("Team member not found.")
+
+
+class ReauthenticationFailed(ReviewFlowError):
+    """One generic failure for a wrong password or a wrong/replayed 2FA code
+    on setup/disable (no enumeration of which factor was wrong)."""
+
+    http_status = 400
+    code = "reauthentication_failed"
+
+    def __init__(self):
+        super().__init__("Incorrect password or code.")
+
+
+class InvalidTotpCode(ReviewFlowError):
+    """The code given to confirm enrollment does not verify."""
+
+    http_status = 400
+    code = "invalid_totp_code"
+
+    def __init__(self):
+        super().__init__("Invalid authentication code.")
+
+
+class TotpAlreadyEnabled(ReviewFlowError):
+    """Setup or confirm was called for a user who already has 2FA enabled."""
+
+    http_status = 409
+    code = "totp_already_enabled"
+
+    def __init__(self):
+        super().__init__("Two-factor authentication is already enabled.")
+
+
+class TotpSetupRequired(ReviewFlowError):
+    """Confirm was called with no pending setup."""
+
+    http_status = 409
+    code = "totp_setup_required"
+
+    def __init__(self):
+        super().__init__("Start two-factor setup first.")
+
+
+class TotpNotEnabled(ReviewFlowError):
+    """Disable was called for a user who does not have 2FA enabled."""
+
+    http_status = 409
+    code = "totp_not_enabled"
+
+    def __init__(self):
+        super().__init__("Two-factor authentication is not enabled.")

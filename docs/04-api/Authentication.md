@@ -6,7 +6,7 @@ Three distinct authentication mechanisms are used, for three distinct callers. N
 
 - Django session auth, cookie-based, same-origin (via Cloudflare) with the Next.js frontend.
 - CSRF protection required on all state-changing requests.
-- Optional TOTP 2FA per user.
+- Optional TOTP 2FA per user (RFC 6238, per-user opt-in only — a merchant cannot require it). Enrollment is `POST /auth/2fa/setup` + `POST /auth/2fa/confirm`, which returns 10 one-time recovery codes shown once. Login is two-step for an enrolled user: `POST /auth/login` checks the password and returns `{ totp_required: true }` without creating a session, then `POST /auth/login/totp` completes it with a TOTP or recovery code.
 - Login: `POST /auth/login` (see `API-Specification.md`).
 - **Why session over JWT for V1**: simpler to reason about revocation and CSRF is a well-understood pattern; revisit only if a fully-decoupled mobile app is planned (see the blueprint's "Decisions I Made Without Asking").
 

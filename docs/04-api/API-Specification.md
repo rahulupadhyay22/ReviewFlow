@@ -15,8 +15,33 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 ### `POST /auth/login`
 - **Auth**: none; CSRF required
 - **Request**: `{ email, password }`
-- **Response**: `200 { user: { id, email }, merchant: { id, name }, role }` and sets the session cookie
-- **Errors**: `401` invalid credentials (one generic response for every failure reason), `403` missing CSRF token, `429` too many attempts (per-IP)
+- **Response, no TOTP enrolled**: `200 { user: { id, email, totp_enabled }, merchant: { id, name }, role }` and sets the session cookie
+- **Response, TOTP enrolled**: `200 { totp_required: true }`. The password and membership were already checked, exactly as above, but the session is **not** logged in — it holds only a short-lived (5 minute), unauthenticated pending marker. Complete the login with `POST /auth/login/totp`.
+- **Errors**: `401` invalid credentials (one generic response for every failure reason, including for an enrolled user), `403` missing CSRF token, `429` too many attempts (per-IP)
+
+### `POST /auth/login/totp`
+- **Auth**: none (the pending marker from `POST /auth/login` only); CSRF required
+- **Request**: `{ code }` — a 6-digit TOTP code, or a recovery code
+- **Response**: `200` — same body shape as a successful `POST /auth/login`, and sets the session cookie
+- **Errors**: `401 invalid_credentials` — one generic response for every failure reason (no pending marker, expired marker, attempt cap reached, wrong or replayed code, membership revoked or merchant suspended since step 1, 2FA disabled since step 1); `403` missing CSRF token; `429` too many attempts (per-IP). After 5 wrong codes the pending marker is discarded and `POST /auth/login` must be repeated.
+
+### `POST /auth/2fa/setup`
+- **Auth**: session required; all roles (2FA is per user, not per merchant)
+- **Request**: `{ password }`
+- **Response**: `200 { secret, otpauth_uri }` — scan `otpauth_uri` as a QR code, or enter `secret` manually. Calling this again before confirming replaces the pending secret.
+- **Errors**: `400 reauthentication_failed` (wrong password); `409 totp_already_enabled`; `429` too many attempts (per user)
+
+### `POST /auth/2fa/confirm`
+- **Auth**: session required; all roles
+- **Request**: `{ code }` — a 6-digit TOTP code
+- **Response**: `200 { recovery_codes: [ "xxxxx-xxxxx-xxxxx-xxxxx", … 10 ] }` — shown once; there is no way to retrieve them again
+- **Errors**: `400 invalid_totp_code`; `409 totp_already_enabled`; `409 totp_setup_required` (no pending setup); `429` too many attempts
+
+### `POST /auth/2fa/disable`
+- **Auth**: session required; all roles
+- **Request**: `{ password, code }` — `code` is a TOTP or recovery code
+- **Response**: `204`
+- **Errors**: `400 reauthentication_failed` — one generic response for a wrong password **or** a wrong/replayed code; `409 totp_not_enabled`; `429` too many attempts
 
 ### `POST /auth/logout`
 - **Auth**: session required

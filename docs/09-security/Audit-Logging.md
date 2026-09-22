@@ -12,6 +12,7 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 
 **Merchant-side (always logged):**
 - Team member invited / role changed / removed
+- Two-factor authentication enabled / disabled / a recovery code used
 - Campaign activated / deactivated
 - Integration connected / disconnected
 - WhatsApp sender changed (own number ↔ shared pool)

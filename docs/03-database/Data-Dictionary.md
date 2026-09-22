@@ -19,6 +19,10 @@ Every model additionally has `id` (PK, UUID recommended for externally-exposed m
 | email | string | No | unique |
 | password_hash | string | No | |
 | is_active | bool | No | |
+| totp_secret_encrypted | text | Yes | Fernet-encrypted base32 TOTP secret. Set while enrollment is pending or confirmed; NULL when 2FA is off. Never logged or exposed after the one-time setup response. |
+| totp_confirmed_at | datetime | Yes | 2FA is enabled iff non-null |
+| totp_last_used_step | bigint | Yes | last accepted TOTP time step; a code at or before this step is rejected (replay protection) |
+| totp_recovery_code_hashes | jsonb | No, default `[]` | sha256 hashes of the unused one-time recovery codes |
 
 ### TeamMember
 | Field | Type | Nullable | Notes |

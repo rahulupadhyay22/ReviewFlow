@@ -44,6 +44,15 @@ class User(BaseModel, AbstractBaseUser, PermissionsMixin):
     # Not in the dictionary: Django Admin staff-only access needs it.
     is_staff = models.BooleanField(default=False)
 
+    # Optional per-user TOTP 2FA (Authentication.md §1). GLOBAL like the rest
+    # of User: no merchant_id, no RLS. This is intentional (Database-Design.md
+    # Legend), not a missed RLS table. Never logged, serialized outside the
+    # one-time setup/confirm responses, or shown in Django Admin.
+    totp_secret_encrypted = models.TextField(null=True, blank=True)
+    totp_confirmed_at = models.DateTimeField(null=True, blank=True)
+    totp_last_used_step = models.BigIntegerField(null=True, blank=True)
+    totp_recovery_code_hashes = models.JSONField(default=list, blank=True)
+
     objects = UserManager()
 
     USERNAME_FIELD = "email"
@@ -56,6 +65,10 @@ class User(BaseModel, AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+    @property
+    def is_totp_enabled(self) -> bool:
+        return self.totp_confirmed_at is not None
 
 
 class Merchant(BaseModel):

@@ -18,6 +18,11 @@ environ.Env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DATABASES = {"default": env.db("DATABASE_URL")}
 REDIS_URL = env("REDIS_URL")
+# Fernet key for encrypting secrets at rest (OAuth tokens in Phase 09, the
+# TOTP secret here). Empty by default; core.crypto raises ImproperlyConfigured
+# at first use, not here, so management commands that never touch crypto
+# (e.g. collectstatic) still work without it set.
+FERNET_KEY = env("FERNET_KEY", default="")
 
 if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
     raise ImproperlyConfigured("DATABASE_URL must point to PostgreSQL.")
@@ -92,7 +97,12 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["accounts.permissions.IsMerchantMember"],
     "EXCEPTION_HANDLER": "core.api.exception_handler",
-    "DEFAULT_THROTTLE_RATES": {"login": "5/min", "invite_accept": "5/min"},
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "5/min",
+        "invite_accept": "5/min",
+        "login_totp": "5/min",
+        "totp_manage": "5/min",
+    },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
     # X-Forwarded-For entry. Never leave it unset: DRF would then trust the

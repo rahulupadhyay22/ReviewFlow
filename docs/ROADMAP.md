@@ -28,7 +28,7 @@ several specs if it is too large for one branch.
 |----|-------------------------------------------|--------------------|-------------|
 | 00 | Project scaffold & dev environment        | —                  | Done        |
 | 01 | Core tenancy & RLS                        | 00                 | Done        |
-| 02 | Accounts, roles & audit log               | 01                 | Not started |
+| 02 | Accounts, roles & audit log               | 01                 | Done        |
 | 03 | Locations, manager assignment & seed data | 02                 | Not started |
 | 04 | Event inbox & ingestion core              | 03                 | Not started |
 | 05 | Public API keys                           | 02                 | Not started |

@@ -31,9 +31,9 @@ section is only a snapshot of the current phase. It is NOT updated
 per feature or task — it changes only when the current roadmap phase
 changes, which `/ship-feature` handles when a phase is completed.
 
-- Current phase: **02 — Accounts, roles & audit log**
+- Current phase: **03 — Locations, manager assignment & seed data**
 - Status: Not started
-- Also eligible: none
+- Also eligible: 05 — Public API keys, 07 — Billing & quota foundation
 
 Phase 00 — Project scaffold & dev environment is Done: only the
 Django project scaffold exists (`config/`, Celery wiring, pytest).
