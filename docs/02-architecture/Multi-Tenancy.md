@@ -22,6 +22,15 @@ Every tenant-owned model's default manager inherits from `core.TenantScopedManag
 - Celery flow: task receives explicit `merchant_id` → enters `transaction.atomic()` for tenant DB work → sets the same `SET LOCAL` value before queries. Each new transaction repeats this step.
 - This is a backstop that catches bugs where a raw query bypasses the manager — it is not the primary mechanism, application-level scoping is.
 
+#### Login membership lookup — `self_membership` (signed off 2026-09-19)
+
+At login no merchant is known yet, so the user's `TeamMember` rows must be read before any tenant context exists. `TeamMember` therefore carries a second, **SELECT-only** policy, `self_membership`: `user_id = app.current_user_id`, alongside the standard `tenant_isolation` policy.
+
+- `app.current_user_id` is set only by `SET LOCAL` inside `core.tenancy.user_lookup_atomic()` — transaction-local, never session-level, fail-closed when unset.
+- There is no write policy keyed on `app.current_user_id`; every insert/update/delete still needs `tenant_isolation`.
+- PostgreSQL ORs PERMISSIVE policies, so `user_lookup_atomic()` refuses to run while a merchant context is active — combining both settings would expose the user's memberships in other merchants to that merchant's transaction.
+- The application layer mirrors it: `TeamMember.objects.for_lookup_user(user_id)` works only inside `user_lookup_atomic()` for that same user.
+
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.

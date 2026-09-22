@@ -22,6 +22,7 @@ PostgreSQL is the single source of truth for all business data. This document co
 **Relationships**: Merchant 1───*, User 1───*; location scoping for `MANAGER` goes through the explicit `TeamMemberLocation` model below, not a default Django M2M.
 **Unique constraint**: `(merchant_id, user_id)`.
 **Tenant ownership**: MERCHANT.
+**RLS**: `tenant_isolation` (direct `merchant_id`) plus the SELECT-only `self_membership` login-lookup policy keyed on `app.current_user_id` — see `../02-architecture/Multi-Tenancy.md` §Layer 2.
 
 ### TeamMemberLocation
 **Purpose**: explicit through-model assigning a `TeamMember` to specific `Location`s (used for the `MANAGER` role). Introduced specifically to make cross-tenant assignment structurally impossible to represent, not just application-blocked.
