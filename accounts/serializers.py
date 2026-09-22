@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from accounts.models import Merchant
+from accounts.models import Merchant, TeamMember
 
 
 class LoginSerializer(serializers.Serializer):
@@ -35,3 +35,30 @@ def session_body(team_member):
         "merchant": {"id": str(team_member.merchant_id), "name": team_member.merchant.name},
         "role": team_member.role,
     }
+
+
+class TeamMemberUserSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    email = serializers.EmailField()
+
+
+class TeamMemberSerializer(serializers.ModelSerializer):
+    user = TeamMemberUserSerializer()
+
+    class Meta:
+        model = TeamMember
+        fields = ["id", "user", "role", "invited_at", "accepted_at"]
+
+
+class TeamMemberInviteSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=TeamMember.Role.choices)
+
+
+class TeamMemberRoleSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=TeamMember.Role.choices)
+
+
+class AcceptInviteSerializer(serializers.Serializer):
+    token = serializers.CharField()
+    password = serializers.CharField(trim_whitespace=False)

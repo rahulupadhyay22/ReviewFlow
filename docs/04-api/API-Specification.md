@@ -26,6 +26,15 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 - **Auth**: session required (if using short-lived session tokens)
 - **Response**: `200` refreshed session state (same body as login); the session expiry is extended
 
+### `POST /auth/accept-invite`
+- **Auth**: none; CSRF required
+- **CSRF bootstrap**: the invitee has no session, so the frontend calls `GET /auth/login` first to obtain the `csrftoken` cookie, then sends it as `X-CSRFToken` here. This does **not** authenticate the invitee or create a login session — it only issues the CSRF cookie, exactly as it does for the login page.
+- **Invite link transport**: `POST /team-members` returns an `invite_token`. The frontend builds the invite link as a URL **fragment**, never a query parameter — `https://<frontend>/accept-invite#token=<invite_token>` — so the token is never sent to the server in a navigation request and never appears in server, CDN or WAF access logs. The accept-invite page reads `location.hash`, removes it from the address bar (`history.replaceState`) **before** any analytics, telemetry, error-reporting or other third-party script can observe the URL, and sends the token only in this endpoint's JSON body — never as a query parameter or header, and never to analytics/telemetry/error-reporting. Invite links are `https://` only; production serves the frontend and API over HTTPS only.
+- **Request**: `{ token, password }`
+- **Response**: `204`. The invitee then logs in through `POST /auth/login`.
+- **Password rule**: if the invited email has no usable password yet (a brand-new person, or an existing `User` row created by another still-pending invite that was never accepted), `password` sets it, validated by Django's password validators. If the email already has a usable password (an existing account), `password` must be that account's **current** password — accepting an invite never changes an existing password. This prevents an OWNER/ADMIN of any merchant from taking over a known email's existing account via an invite link.
+- **Errors**: `400 invalid_invite` — one generic response for every failure reason (bad/tampered signature, expired token, already accepted, superseded by a re-invite, revoked, merchant not `ACTIVE`, or wrong current password for an existing account); `422` only when a new/uninitialized account's password fails validation; `403` missing CSRF token; `429` too many attempts (per-IP)
+
 ---
 
 ## Merchant
@@ -145,13 +154,34 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ## Team
 
+Member body: `{ id, user: { id, email }, role, invited_at, accepted_at }`.
+There is no `locations` field yet — assigned locations for `MANAGER`
+(read from `TeamMemberLocation`) arrive with Phase 03. A `MANAGER`
+invited before then has no location assignment until Phase 03.
+
 ### `GET /team-members`
-- **Response**: includes each member's assigned locations (read from `TeamMemberLocation`) for `MANAGER` roles
+- **Permissions**: OWNER, ADMIN only
+- **Response**: `200 { results: [member] }`, pending and accepted members, ordered by creation time. No pagination.
 
 ### `POST /team-members` (invite)
+- **Permissions**: OWNER, ADMIN only
+- **Request**: `{ email, role }`
+- **Response**: `201 { ...member, invite_token }`. `invite_token` is a credential — see `Authentication.md` §1 and the transport rules under `POST /auth/accept-invite` above.
+- **Behavior**: creates the `User` (with an unusable password) if the email is new. Re-inviting a still-pending member refreshes `role` and `invited_at` and returns a new `invite_token`; the previous token then fails with `400 invalid_invite`.
+- **Errors**: `409 already_member` if the email is already an accepted member of this merchant; `403 team_permission_denied` if a non-OWNER actor invites with `role: OWNER`; `422` for an invalid email or role
+
 ### `PATCH /team-members/{id}` (role change)
+- **Permissions**: OWNER, ADMIN only
+- **Request**: `{ role }`
+- **Response**: `200` with the member body
+- **Rules**: nobody can change their own role. Only an OWNER can change an OWNER's role or grant the OWNER role. The last accepted OWNER is protected by these rules: self role change and self revoke are `403`, and only an accepted OWNER can target another OWNER, so an OWNER always remains. There is no reachable `409` for this.
+- **Errors**: `404` if `{id}` is not a member of the current merchant (never `403`, to avoid revealing cross-tenant existence); `403 team_permission_denied` for the self/OWNER rules above; `422` for an invalid role
+
 ### `DELETE /team-members/{id}` (revoke)
-- **Permissions**: OWNER, ADMIN only for all of the above
+- **Permissions**: OWNER, ADMIN only
+- **Response**: `204`. Deletes the `TeamMember` row (pending or accepted); the underlying `User` is kept.
+- **Rules**: same self/OWNER rules as the role change above, which also protect the last OWNER.
+- **Errors**: `404`, `403 team_permission_denied` — same meanings as `PATCH` above
 
 ### `PUT /team-members/{id}/locations` (set assigned locations, MANAGER only)
 - **Request**: `{ location_ids: [...] }`
