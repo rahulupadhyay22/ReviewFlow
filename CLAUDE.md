@@ -36,10 +36,26 @@ changes, which `/ship-feature` handles when a phase is completed.
 - Also eligible: 05 — Public API keys, 07 — Billing & quota foundation,
   08 — WhatsApp, 09 — Google Business Profile
 
-Phase 00 — Project scaffold & dev environment is Done: only the
-Django project scaffold exists (`config/`, Celery wiring, pytest).
-No Django apps exist yet — do not assume any app, model, manager,
-or helper exists.
+Phases 00–03 are Done. Django apps present:
+
+- `core`: `BaseModel`, `TenantScopedManager`, tenant context
+  (`tenant_context`, `tenant_atomic`, `user_lookup_atomic`,
+  `tenant_task`), RLS migration helpers (`core/rls.py`), Fernet
+  crypto, the API error handler, shared `CursorPagination`, and the
+  `seed_dev` command
+- `accounts`: `User`, `Merchant`, `TeamMember`, `TeamMemberLocation`;
+  session auth + CSRF, optional TOTP 2FA, role permission classes,
+  team invite/role change/revoke, MANAGER location assignment
+- `auditlog`: `AuditLog` + `record()`
+- `locations`: `Location` + `/locations`; MANAGER scoping via
+  `locations.services.accessible_locations`
+
+No other app from the Project Structure below exists yet (no
+integrations, events, customers, transactions, campaigns, WhatsApp,
+Google, billing, API keys, feedback, QR codes or analytics).
+`seed_dev` creates a merchant, 2 locations and an assigned MANAGER
+only; its Plan/Subscription and WhatsApp fixtures arrive in Phases
+07 and 08.
 
 - Before assuming a component exists, check its phase status in
   `docs/ROADMAP.md` and confirm the code is actually present.
