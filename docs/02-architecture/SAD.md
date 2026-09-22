@@ -44,7 +44,7 @@ reviewflow/
 ├── analytics/                   # dashboard read/aggregation queries
 ├── billing/                     # Subscription, Plan, UsageRecord, payment webhooks
 ├── apikeys/                     # ApiKey, scoping, rate limiting
-└── auditlog/                    # AuditLog model + middleware
+└── auditlog/                    # AuditLog model + record() service
 ```
 
 **Rule**: views/serializers never contain business logic — they call a `services.py` function in the owning app. Eligibility, sending, and sync logic must be testable and reusable from Celery tasks, management commands, and the API alike. Internal admin for V1 is customized Django Admin registrations across these apps — there is no separate `admin_panel` app.

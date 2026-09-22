@@ -92,7 +92,7 @@ apps that are not listed here.
     ├── analytics/       # dashboard read/aggregation queries
     ├── billing/         # Subscription, Plan, UsageRecord, payment webhooks
     ├── apikeys/         # ApiKey, scoping, rate limiting
-    └── auditlog/        # AuditLog model + middleware
+    └── auditlog/        # AuditLog model + record() service
 
 There is no separate admin app: internal admin is customized Django
 Admin registrations across these apps.

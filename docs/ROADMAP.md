@@ -77,7 +77,7 @@ Source: `02-architecture/Multi-Tenancy.md`,
 - Session auth + CSRF: `/auth/login`, `/auth/logout`,
   `/auth/refresh`; optional TOTP 2FA
 - `/merchant`, `/team-members` (invite, role change, revoke)
-- `AuditLog` model + middleware
+- `AuditLog` model + explicit `record()` calls from services
 
 Source: `04-api/Authentication.md`,
 `04-api/API-Specification.md` (Auth, Merchant, Team),
