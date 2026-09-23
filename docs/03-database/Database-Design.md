@@ -73,12 +73,14 @@ Create/Update Transaction
 
 **Unique constraint**: `(integration_id, external_event_id)` — **revised** from `(source, external_event_id)`. The same `external_event_id` can legitimately recur across different merchants' integrations (e.g. two Shopify stores both numbering invoices from 1), so scoping to the bare `source` string was not tenant-safe.
 **Invariant enforced at creation, not merely documented**: `IntegrationEvent.merchant_id == Integration.merchant_id`.
+**Statuses**: `RECEIVED, PROCESSED, FAILED, DEAD_LETTER, CANCELLED`. Disconnecting an integration moves its pending `RECEIVED`/`FAILED` events to terminal `CANCELLED` (rows are kept); `CANCELLED` is never processed or retried.
+**Failure fields**: `attempt_count` (retry backoff and `DEAD_LETTER` cap), `error_code` and `error_message` — both drawn only from a fixed, PII-safe code/message table; never exception text, payload values, phone numbers, credentials or tokens.
 **Indexes**: `(status, received_at)` — powers retry/dead-letter queries; `(integration_id, external_event_id)` — the unique constraint's index, doubles as the idempotency lookup.
 **Delete behavior**: never hard-deleted (audit trail); may be purged per retention policy (see `../09-security/Privacy-Data-Retention.md`).
 **Tenant ownership**: MERCHANT (direct, non-null — no longer transitively/nullably via `location_id`).
 
 ### Customer
-**Purpose**: a merchant's end customer, identified by phone. Deliberately thin — not a CRM.
+**Purpose**: a merchant's end customer, identified by phone. Deliberately thin — not a CRM. Created only when a sale supplies a customer phone; a sale without one is still recorded as a `Transaction`, with no `Customer`.
 **Unique constraint**: `(merchant_id, phone)`.
 **Relationships**: Merchant 1───*; 1───* Transaction.
 **Tenant ownership**: MERCHANT.
@@ -87,7 +89,7 @@ Create/Update Transaction
 **Purpose**: a normalized completed (or refunded/voided) sale.
 **Unique constraint**: `(location_id, external_transaction_id)`.
 **Indexes**: `(merchant_id, occurred_at)`.
-**Relationships**: Customer 1───*; Location 1───*; Integration 1───*; 1───* CampaignExecution.
+**Relationships**: Customer 1───* (optional — `customer_id` is null for a sale recorded without a customer phone; such a transaction is never review-eligible); Location 1───*; Integration 1───*; 1───* CampaignExecution.
 **Delete behavior**: `RESTRICT` from Merchant — financial records are never cascade-deleted.
 **Tenant ownership**: LOCATION.
 

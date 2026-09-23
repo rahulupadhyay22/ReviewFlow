@@ -9,7 +9,7 @@
 
 ## 2. Eligibility Rules (checked in order, short-circuiting)
 
-1. `Customer.phone` present and valid E.164
+1. The transaction has a `Customer` (a sale recorded without a customer phone has none and is never eligible), and `Customer.phone` is valid E.164
 2. `Customer.opted_out == False`
 3. `Transaction.status == COMPLETED`
 4. No existing active/sent `CampaignExecution` for this transaction under **any** campaign (V1 rule: one transaction receives only one review request, period). This is checked **transactionally**, under a row lock on the `Transaction`, not just as a pre-check — two campaigns (or two concurrent workers) racing to create an execution for the same transaction at once must still result in exactly one execution. See `../06-automation/Campaign-Engine.md` §"Concurrency & Locking" for the locking pattern; the `(campaign_id, transaction_id)` unique constraint remains as a database-level backstop underneath the lock.

@@ -42,6 +42,10 @@ INSTALLED_APPS = [
     "accounts",
     "locations",
     "auditlog",
+    "integrations",
+    "customers",
+    "transactions",
+    "events",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -132,5 +136,11 @@ CELERY_TASK_QUEUES = tuple(
 )
 CELERY_TASK_DEFAULT_QUEUE = "default"
 # Beat entries are added by the phases that build their tasks.
-CELERY_BEAT_SCHEDULE = {}
+CELERY_BEAT_SCHEDULE = {
+    "retry-failed-events": {
+        "task": "events.tasks.retry_failed_events",
+        "schedule": 300.0,
+        "options": {"queue": "events"},
+    },
+}
 CELERY_TIMEZONE = "UTC"
