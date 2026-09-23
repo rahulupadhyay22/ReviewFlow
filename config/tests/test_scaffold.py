@@ -86,8 +86,17 @@ def test_celery_eager_mode_propagates_task_exceptions():
         _boom.delay()
 
 
-def test_beat_schedule_is_empty():
-    assert settings.CELERY_BEAT_SCHEDULE == {}
+def test_beat_schedule_has_only_the_entries_added_so_far():
+    # Updated by Phase 04 (events.tasks.retry_failed_events): the settings.py
+    # comment above CELERY_BEAT_SCHEDULE says entries are added by the phases
+    # that build their tasks -- this was the pre-Phase-04 placeholder.
+    assert settings.CELERY_BEAT_SCHEDULE == {
+        "retry-failed-events": {
+            "task": "events.tasks.retry_failed_events",
+            "schedule": 300.0,
+            "options": {"queue": "events"},
+        },
+    }
 
 
 def test_timezone_settings():

@@ -91,8 +91,11 @@ Explicit mapping between a merchant-level integration and an internal location. 
 | external_event_id | string | No | unique with `integration_id` |
 | location_id | FK → Location | Yes | resolved during normalization (may still be unknown at creation if the payload doesn't map cleanly) |
 | payload | json | No | raw inbound payload |
-| status | enum | No | RECEIVED, PROCESSED, FAILED, DEAD_LETTER |
-| received_at / processed_at | datetime | Yes | |
+| status | enum | No | RECEIVED, PROCESSED, FAILED, DEAD_LETTER, CANCELLED. `CANCELLED` is terminal: set on pending (`RECEIVED`/`FAILED`) events when their integration is disconnected; never processed or retried |
+| received_at / processed_at | datetime | Yes | `received_at` is always set at creation |
+| attempt_count | integer | No | default 0; failed processing attempts, drives retry backoff and the `DEAD_LETTER` cap |
+| error_code | string | Yes | stable machine-readable code of the last failure (e.g. `INVALID_PHONE`, `LOCATION_UNRESOLVED`, `PROCESSING_ERROR`) |
+| error_message | string | Yes | controlled, PII-safe message for `error_code`. Neither error field ever contains exception text, payload values, phone numbers, credentials, tokens or request bodies |
 
 **Unique constraint**: `(integration_id, external_event_id)` — **not** `(source, external_event_id)`.
 **Application-level invariant**: `IntegrationEvent.merchant_id == Integration.merchant_id`, enforced at creation, not merely documented — see `../02-architecture/Multi-Tenancy.md`.
@@ -101,7 +104,7 @@ Explicit mapping between a merchant-level integration and an internal location. 
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
-| phone | string (E.164) | No | unique with `merchant_id` |
+| phone | string (E.164) | No | unique with `merchant_id`. A `Customer` is created only when a sale supplies a phone |
 | name | string | Yes | |
 | first_seen_at / last_seen_at | datetime | Yes | |
 | total_transactions | integer | No | denormalized counter |
@@ -113,7 +116,7 @@ Explicit mapping between a merchant-level integration and an internal location. 
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
 | location_id | FK → Location | No | |
-| customer_id | FK → Customer | No | |
+| customer_id | FK → Customer | Yes | null when the sale supplied no customer phone; such a transaction is never eligible for a review request |
 | integration_id | FK → Integration | Yes | |
 | external_transaction_id | string | No | unique with `location_id` |
 | amount | money | No | |

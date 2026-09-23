@@ -30,7 +30,7 @@
 ```
 POS/e-commerce sale completed
    -> webhook received & verified
-   -> normalized to internal event, Customer/Transaction created
+   -> normalized to internal event, Transaction created (plus Customer, when a phone is supplied)
    -> eligibility check passes
    -> CampaignExecution scheduled (delay_minutes after the sale)
    -> WhatsApp message sent: "Thanks for visiting {{business_name}}! We'd love to hear

@@ -30,7 +30,7 @@ several specs if it is too large for one branch.
 | 01 | Core tenancy & RLS                        | 00                 | Done        |
 | 02 | Accounts, roles & audit log               | 01                 | Done        |
 | 03 | Locations, manager assignment & seed data | 02                 | Done        |
-| 04 | Event inbox & ingestion core              | 03                 | Not started |
+| 04 | Event inbox & ingestion core              | 03                 | Done        |
 | 05 | Public API keys                           | 02                 | Not started |
 | 06 | Priority integrations                     | 04 (+05, REST API) | Not started |
 | 07 | Billing & quota foundation                | 02                 | Not started |

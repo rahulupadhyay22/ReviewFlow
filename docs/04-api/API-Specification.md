@@ -159,7 +159,7 @@ Location body: `{ id, name, address, phone, timezone, is_active, created_at, upd
 - **Auth**: API key with `sales:write` scope
 - **Request**: normalized `SaleCreated` shape (see `Webhook-Specification.md`)
 - **Response**: `201 { transaction_id, event_id }`
-- **Validation**: phone must be valid E.164; `external_transaction_id` required
+- **Validation**: `external_transaction_id` required. Customer phone is optional: a missing or blank phone is a valid sale and creates a `Transaction` with `customer = null` (no `Customer` row). A phone that is supplied must be valid E.164; a supplied invalid phone is rejected with `422`.
 - **Idempotency**: repeating the same `external_transaction_id` for the same location is a no-op, returns the existing transaction
 
 ### `GET /sales`
@@ -247,7 +247,7 @@ starts with no location assignment until an OWNER/ADMIN sets one with
 - Replaces the authenticated merchant's mapping set atomically.
 
 ### `PATCH /integrations/{id}` (update merchant-level `config_json`)
-### `DELETE /integrations/{id}` (disconnect; mappings remain as historical configuration but become inactive)
+### `DELETE /integrations/{id}` (disconnect; mappings remain as historical configuration but become inactive; the integration's pending `RECEIVED`/`FAILED` events become `CANCELLED` in the same transaction and are never processed)
 
 ---
 

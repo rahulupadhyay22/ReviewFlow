@@ -22,7 +22,7 @@ Location 1───1 WhatsAppLocationMapping ───*..1 WhatsAppAccount ─�
 Integration 1───* IntegrationEvent   (unique on (integration_id, external_event_id))
 IntegrationEvent 0..1───1 Transaction        (event may be rejected/retried; transaction is created by successful normalization)
 
-Customer 1───* Transaction
+Customer 1───* Transaction                 (optional: a sale recorded without a customer phone has no Customer)
 Transaction 1───* CampaignExecution        (one per campaign — see Database-Design.md;
                                              creation is lock-guarded — see Campaign-Engine.md)
 CampaignExecution 1───1 WhatsAppMessage

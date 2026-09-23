@@ -39,7 +39,7 @@ CampaignExecution = SENT      WhatsAppMessage = READ     ← CampaignExecution d
 
 Full rule set lives in `../01-product/Business-Rules.md` §2 — summarized here as the implementation checklist, checked in order, short-circuiting on the first failure:
 
-1. `Customer.phone` present and valid E.164
+1. The transaction has a `Customer` (a sale recorded without a customer phone has none and is never eligible), and `Customer.phone` is valid E.164
 2. `Customer.opted_out == False`
 3. `Transaction.status == COMPLETED`
 4. No existing active/sent `CampaignExecution` for this transaction — checked transactionally, under a row lock (see "Concurrency & Locking" below), across *all* campaigns, not just this one

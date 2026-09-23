@@ -19,9 +19,9 @@ Idempotency check — (integration_id, external_event_id) unique
    ↓
 Normalization — provider-specific parse() → common SaleCreated shape
    ↓
-Customer get-or-create
+Customer get-or-create — only when the sale supplies a customer phone
    ↓
-Transaction create — (location_id, external_transaction_id) unique
+Transaction create — customer may be null — (location_id, external_transaction_id) unique
    ↓
 Eligibility check (see ../01-product/Business-Rules.md §2), including a row lock on the
 Transaction to guard against a concurrent execution being created for it (see
@@ -51,16 +51,16 @@ CampaignExecution create — (campaign_id, transaction_id) unique
 
 - Every inbound call writes an `IntegrationEvent` row **before** any processing, with `status = RECEIVED` and `merchant_id` already resolved from the `Integration`.
 - `UNIQUE(integration_id, external_event_id)` — **revised from `(source, external_event_id)`**. Scoping to the bare provider name was not tenant-safe: the same `external_event_id` (e.g. an invoice number) can legitimately recur across two different merchants both using the same POS provider. Scoping to `integration_id` (which is itself merchant-specific) closes that gap. A retried delivery of the same event to the same integration is caught at the database and returns `200` without reprocessing.
-- Processing itself (in a Celery task) is additionally idempotent: it checks `IntegrationEvent.status != PROCESSED` before doing anything, so even a duplicate task enqueue is safe.
+- Processing itself (in a Celery task) is additionally idempotent: it processes only `RECEIVED`/`FAILED` events (`PROCESSED`, `DEAD_LETTER` and `CANCELLED` are no-ops), so even a duplicate task enqueue is safe.
 - Downstream, `CampaignExecution(campaign_id, transaction_id)` is the next backstop, now paired with a `SELECT ... FOR UPDATE` lock on the `Transaction` row at creation time to close a race between two campaigns (or two concurrent workers) both attempting to create an execution for the same transaction at once — see `../06-automation/Campaign-Engine.md` §"Concurrency & Locking". The unique constraint remains as an additional database-level safety net on top of the lock, not a replacement for it.
 
 ## Event Statuses
 
-`RECEIVED → PROCESSED` (happy path), or `RECEIVED → FAILED → (retry) → PROCESSED`, or `FAILED → DEAD_LETTER` after N attempts.
+`RECEIVED → PROCESSED` (happy path), or `RECEIVED → FAILED → (retry) → PROCESSED`, or `FAILED → DEAD_LETTER` after N attempts, or `RECEIVED`/`FAILED → CANCELLED` when the integration is disconnected. `PROCESSED`, `DEAD_LETTER` and `CANCELLED` are terminal; disconnecting an integration stops processing of its pending events.
 
 ## Retries & Failure Handling
 
-- Processing failures (bad payload, transient DB error) set `status = FAILED` with an error message.
+- Processing failures (bad payload, transient DB error) set `status = FAILED` with a stable `error_code` and a controlled, PII-safe `error_message` — never exception text, payload values, phone numbers, credentials or tokens. A sale with no customer phone is not a failure; it is recorded as a `Transaction` without a `Customer`.
 - A scheduled task (`retry_failed_events`, every 5 minutes) retries `FAILED` events with exponential backoff.
 - After a capped number of attempts, the event moves to `DEAD_LETTER` for manual review in the admin panel — it is never silently dropped.
 
@@ -86,6 +86,8 @@ CampaignExecution create — (campaign_id, transaction_id) unique
   "occurred_at": "2026-09-18T13:00:00+05:30"
 }
 ```
+
+`customer` (and `customer.phone`) may be absent: a sale without a customer phone is still recorded as a `Transaction`, with no `Customer`. A phone that is supplied must be valid E.164.
 
 This is the only shape any downstream consumer (eligibility, campaign scheduler) ever sees — no consumer knows or cares which provider produced it. Every adapter's `normalize()` method is responsible for producing exactly this shape; see `../05-integrations/Integration-Architecture.md`.
 
