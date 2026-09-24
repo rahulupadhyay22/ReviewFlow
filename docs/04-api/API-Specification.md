@@ -66,8 +66,9 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 
 ### `GET /merchant`
 - **Auth**: session or API key
-- **Permissions**: any role
+- **Permissions**: any role (session); any active API key, no scope required
 - **Response**: `200 { id, name, business_type, timezone, plan, status }`
+- **Note**: no-scope API-key access here is the Phase-05 compatibility consumer only. It does not mean every future key-accepting endpoint is reachable without a scope: each one names its required scope (e.g. `POST /sales` → `sales:write`).
 
 ### `PATCH /merchant`
 - **Permissions**: OWNER, ADMIN
@@ -226,6 +227,33 @@ starts with no location assignment until an OWNER/ADMIN sets one with
 - **Response**: `200` with the member body, including the updated `location_ids`.
 - **Validation**: every `location_id` must belong to the same merchant as the team member — rejected with `422` otherwise (this is the API-level surface of the `TeamMemberLocation` invariant in `../02-architecture/Multi-Tenancy.md`). An unknown `location_id` and a cross-merchant `location_id` return the identical `422` body, so a response never reveals whether a location exists in another merchant.
 - **Errors**: `403 team_permission_denied` for MANAGER/VIEWER actors; `404` if `{id}` is not a member of the current merchant (never `403`); `422` if the target's role is not `MANAGER`, if any `location_id` is unknown/cross-merchant, or for a malformed UUID
+
+---
+
+## API Keys
+
+Key body: `{ id, scopes, is_active, created_at, last_used_at }`. Never includes the key hash. All three endpoints are **session only** (+ CSRF on writes) — an API key can never list, create, or revoke keys.
+
+### `GET /api-keys`
+- **Permissions**: OWNER, ADMIN
+- **Pagination**: cursor-based, `?cursor=`/`?limit=` (max 100)
+- **Response**: `200 { results: [key], next_cursor }`, active and revoked keys, newest first
+
+### `POST /api-keys`
+- **Permissions**: OWNER, ADMIN
+- **Request**: `{ scopes: [ ... ] }` — non-empty, distinct, each one of `sales:write`, `reviews:read`, `transactions:read`
+- **Response**: `201 { ...key, key: "rf_live_..." }` — the plaintext `key` is returned only in this response; it is stored only as a sha256 hash and can never be retrieved again
+- **Errors**: `403` insufficient role or missing CSRF; `422` missing/empty scopes, an unknown scope, or duplicates
+- Any `merchant_id`, `id`, `is_active` or key hash in the body is ignored.
+
+### `DELETE /api-keys/{id}` (revoke)
+- **Permissions**: OWNER, ADMIN
+- **Response**: `204`. Idempotent — revoking an already-revoked key returns `204` and changes nothing.
+- **Behavior**: affects authentication of subsequent requests; a request already authenticated with the key is not cancelled.
+- **Errors**: `404` if not found or belongs to another merchant (never `403`)
+
+### Public-API authentication errors
+On every endpoint that accepts an API key: `401` with `WWW-Authenticate: Bearer` and `{ error: { code: "invalid_api_key", message } }` — one generic response for a malformed, unknown, or revoked key, or a key whose merchant is not `ACTIVE`. Rate-limited requests return `429` with `Retry-After`.
 
 ---
 

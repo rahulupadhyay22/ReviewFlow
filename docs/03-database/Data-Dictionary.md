@@ -305,9 +305,13 @@ One row per scan. Privacy-conscious by design — **no raw IP address is ever st
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
 | key_hash | string | No | sha256, never plaintext |
-| scopes_json | json | No | |
+| scopes_json | json | No | non-empty list of distinct values from the scope allowlist below |
 | is_active | bool | No | |
 | last_used_at | datetime | Yes | |
+
+**Unique constraint**: `(key_hash)`. Used by the pre-tenant key lookup (see `../02-architecture/Multi-Tenancy.md`, `api_key_lookup`).
+
+**Scope allowlist**: `sales:write`, `reviews:read`, `transactions:read`. Any other value is rejected.
 
 ### WebhookEndpoint
 | Field | Type | Nullable | Notes |

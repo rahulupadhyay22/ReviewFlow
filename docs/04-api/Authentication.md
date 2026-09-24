@@ -20,6 +20,10 @@ Three distinct authentication mechanisms are used, for three distinct callers. N
   - **Individually revocable** without affecting other keys.
   - **Rate-limited** independently (Redis sliding window; see `../02-architecture/Security-Architecture.md`).
 - Every request derives `merchant_id` from the key — never from a request body/query parameter.
+- **Explicit opt-in per endpoint and method.** An endpoint accepts API keys only if its view declares it (see `API-Specification.md`); API-key auth is never global and never inferred from the URL. A Bearer request on an opted-in endpoint is judged by the key alone — a session cookie on the same request is ignored, and an invalid key never falls back to the session. On any other endpoint the Bearer header is ignored and the request is judged by its session alone.
+- **Point-in-time checks.** Key state (active) and merchant state (`ACTIVE`) are checked on every request. Revoking a key or suspending the merchant does not cancel a request that already authenticated; every subsequent request fails with the generic `401 invalid_api_key`.
+- **`last_used_at` is best-effort** operational metadata, written at most once per minute per key in its own short transaction; a failure to write it never fails an otherwise valid request.
+- **Per-IP limit** keys on the client IP as determined by DRF's `get_ident()` under the configured `NUM_PROXIES`, and is applied before the key lookup so invalid-key attempts are counted. Default rates: 600/min per key, 1200/min per IP, both environment-configurable.
 
 ## 3. Inbound Provider Webhooks
 
