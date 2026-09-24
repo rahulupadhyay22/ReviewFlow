@@ -49,6 +49,25 @@ def rls_select_by_user(table, user_column="user_id"):
     )
 
 
+CURRENT_API_KEY_HASH = "NULLIF(current_setting('app.current_api_key_hash', true), '')"
+
+
+def rls_select_by_key_hash(table, column="key_hash"):
+    """SELECT-only api_key_lookup policy (pre-tenant public-API key lookup,
+    see core.tenancy.api_key_lookup_atomic). Run after rls_direct(), which
+    enables and forces RLS. Never add a write policy keyed on
+    app.current_api_key_hash. Signed off 2026-09-24
+    (Multi-Tenancy.md §"API key lookup").
+    """
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY api_key_lookup ON {table} FOR SELECT "
+            f"USING ({column} = {CURRENT_API_KEY_HASH});"
+        ),
+        reverse_sql=f"DROP POLICY api_key_lookup ON {table};",
+    )
+
+
 def rls_via_parent(table, fk_column, parent_table):
     """Policy for tables reaching the tenant through a parent FK.
 

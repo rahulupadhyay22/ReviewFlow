@@ -31,6 +31,16 @@ At login no merchant is known yet, so the user's `TeamMember` rows must be read 
 - PostgreSQL ORs PERMISSIVE policies, so `user_lookup_atomic()` refuses to run while a merchant context is active — combining both settings would expose the user's memberships in other merchants to that merchant's transaction.
 - The application layer mirrors it: `TeamMember.objects.for_lookup_user(user_id)` works only inside `user_lookup_atomic()` for that same user.
 
+#### API key lookup — `api_key_lookup` (signed off 2026-09-24)
+
+A public-API request (`Authorization: Bearer rf_live_...`) carries no merchant; the merchant is known only after the key's row is read. `ApiKey` therefore carries a second, **SELECT-only** policy, `api_key_lookup`: `key_hash = app.current_api_key_hash`, alongside the standard `tenant_isolation` policy. `FORCE ROW LEVEL SECURITY` stays on.
+
+- `app.current_api_key_hash` is set only by `SET LOCAL` inside `core.tenancy.api_key_lookup_atomic()` — transaction-local, never session-level, fail-closed when unset. The value is the sha256 hex of the presented key, so a row is visible only to a caller already holding the plaintext key.
+- There is no write policy keyed on `app.current_api_key_hash`; every insert/update/delete still needs `tenant_isolation`. No `SECURITY DEFINER` function is used, and the merchant id is never encoded in the key.
+- For the same reason as `self_membership` (PERMISSIVE policies are ORed), `api_key_lookup_atomic()` refuses to run while a merchant context is active, and is always its own outermost (durable) transaction.
+- The application layer mirrors it: `ApiKey.objects.for_lookup_hash(key_hash)` is the only merchant-unscoped `ApiKey` read, and works only inside `api_key_lookup_atomic()` for that same hash.
+- After the lookup, the request's merchant context is set from `ApiKey.merchant_id` and the request proceeds under `tenant_isolation` as usual.
+
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.

@@ -7,6 +7,7 @@ from rest_framework.permissions import BasePermission
 
 from accounts import services
 from accounts.models import TeamMember
+from apikeys.models import ApiKey
 
 
 class IsMerchantMember(BasePermission):
@@ -18,6 +19,18 @@ class IsMerchantMember(BasePermission):
             return False
         request.team_member = services.get_active_membership(request.user)
         return request.team_member is not None
+
+
+class IsMerchantMemberOrApiKey(IsMerchantMember):
+    """GET /merchant only (spec Decision 13: the Phase-05 compatibility
+    consumer -- any active key, no scope required). A key principal never
+    reaches IsMerchantMember.has_permission(), which would call
+    get_active_membership(request.user) against a non-User principal."""
+
+    def has_permission(self, request, view):
+        if isinstance(request.auth, ApiKey):
+            return True
+        return super().has_permission(request, view)
 
 
 class HasRole(IsMerchantMember):

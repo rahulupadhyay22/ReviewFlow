@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 
 from accounts import services
 from accounts.exceptions import InvalidCredentials
-from accounts.permissions import IsMerchantMember, IsOwnerOrAdmin
+from accounts.permissions import IsMerchantMember, IsMerchantMemberOrApiKey, IsOwnerOrAdmin
 from accounts.serializers import (
     AcceptInviteSerializer,
     LoginSerializer,
@@ -23,6 +23,8 @@ from accounts.serializers import (
     TotpSetupSerializer,
     session_body,
 )
+from apikeys.authentication import ApiKeyOptInMixin
+from apikeys.models import ApiKey
 
 
 class LoginRateThrottle(AnonRateThrottle):
@@ -157,11 +159,17 @@ class RefreshView(APIView):
         return Response(session_body(request.team_member))
 
 
-class MerchantView(APIView):
+class MerchantView(ApiKeyOptInMixin, APIView):
+    """GET accepts a session or any active API key -- the Phase-05
+    compatibility consumer, no scope required (spec Decision 13). PATCH
+    stays session-only and is not opted in."""
+
+    api_key_methods = frozenset({"GET"})
+
     def get_permissions(self):
         if self.request.method == "PATCH":
             return [IsOwnerOrAdmin()]
-        return [IsMerchantMember()]
+        return [IsMerchantMemberOrApiKey()]
 
     def get(self, request):
         return Response(MerchantSerializer(self._merchant(request)).data)
@@ -174,8 +182,11 @@ class MerchantView(APIView):
 
     @staticmethod
     def _merchant(request):
-        # The session merchant, already loaded by IsMerchantMember; never an
-        # id from the request.
+        # request.auth is the ApiKey for a Bearer request (never an id from
+        # the request body/query); otherwise the session merchant, already
+        # loaded by IsMerchantMember.
+        if isinstance(request.auth, ApiKey):
+            return request.auth.merchant
         return request.team_member.merchant
 
 

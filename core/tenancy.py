@@ -6,6 +6,7 @@ tenant_atomic() runs one database transaction with the transaction-local
 SET LOCAL app.current_merchant_id that the RLS policies read.
 """
 import functools
+import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -92,6 +93,47 @@ def user_lookup_atomic(user_id: uuid.UUID | str) -> Iterator[uuid.UUID]:
             yield user_id
     finally:
         _current_lookup_user_id.reset(token)
+
+
+_current_lookup_key_hash = ContextVar("current_lookup_key_hash", default=None)
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def get_current_lookup_key_hash() -> str | None:
+    return _current_lookup_key_hash.get()
+
+
+@contextmanager
+def api_key_lookup_atomic(key_hash: str) -> Iterator[str]:
+    """Public-API key lookup only: one transaction with
+    SET LOCAL app.current_api_key_hash, read by the SELECT-only
+    api_key_lookup policy on apikeys_apikey.
+
+    Refuses to run inside a merchant context: the tenant_isolation and
+    api_key_lookup policies are PERMISSIVE, so PostgreSQL ORs them, and
+    nesting (a savepoint) would expose the key's row (and, transitively, its
+    merchant) to an unrelated merchant's transaction.
+
+    It must also be its own outermost transaction: durable=True makes Django
+    raise RuntimeError if it is opened inside any other atomic block (Django's
+    own test-case transactions excepted), so the SET LOCAL can never outlive
+    this block. Mirrors user_lookup_atomic().
+    """
+    if _current_merchant_id.get() is not None:
+        raise TenantContextError("api_key_lookup_atomic() must not run inside a tenant context.")
+    if not _HEX64.match(key_hash or ""):
+        raise ValueError("key_hash must be a 64-character lowercase hex sha256 digest.")
+    token = _current_lookup_key_hash.set(key_hash)
+    try:
+        with transaction.atomic(durable=True):
+            with connection.cursor() as cursor:
+                # Transaction-local; the hash is validated hex above, so the
+                # literal is injection-safe.
+                cursor.execute(f"SET LOCAL app.current_api_key_hash = '{key_hash}'")
+            yield key_hash
+    finally:
+        _current_lookup_key_hash.reset(token)
 
 
 def tenant_task(fn):

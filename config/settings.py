@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "customers",
     "transactions",
     "events",
+    "apikeys",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -57,6 +58,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "accounts.middleware.SessionMerchantMiddleware",
+    "apikeys.middleware.ApiKeyMiddleware",
     "core.middleware.TenantMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -107,6 +109,10 @@ REST_FRAMEWORK = {
         "invite_accept": "5/min",
         "login_totp": "5/min",
         "totp_manage": "5/min",
+        # Public API (Authentication.md §2): independent per-key and
+        # per-IP sliding-window limits.
+        "api_key": env("API_KEY_RATE", default="600/min"),
+        "api_key_ip": env("API_KEY_IP_RATE", default="1200/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last

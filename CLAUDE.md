@@ -31,10 +31,10 @@ section is only a snapshot of the current phase. It is NOT updated
 per feature or task — it changes only when the current roadmap phase
 changes, which `/ship-feature` handles when a phase is completed.
 
-- Current phase: **05 — Public API keys**
+- Current phase: **06 — Priority integrations**
 - Status: Not started
-- Also eligible: 06 — Priority integrations, 07 — Billing & quota
-  foundation, 08 — WhatsApp, 09 — Google Business Profile
+- Also eligible: 07 — Billing & quota foundation, 08 — WhatsApp,
+  09 — Google Business Profile
 
 Phases 00–03 are Done. Django apps present:
 

@@ -40,7 +40,7 @@ def exception_handler(exc, context):
         )
 
     error = _error(exc.default_code, str(exc.detail), response.status_code)
-    for header in ("Retry-After", "Allow"):
+    for header in ("Retry-After", "Allow", "WWW-Authenticate"):
         if header in response:
             error[header] = response[header]
     return error
