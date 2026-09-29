@@ -268,11 +268,12 @@ def _iter_view_method_pairs(patterns, prefix=""):
             yield (cls, m)
 
 
-def test_opt_in_registry_is_exactly_merchantview_get():
+def test_opt_in_registry_is_exactly_merchantview_get_and_salesview():
     from accounts.views import MerchantView
+    from integrations.views import SalesView
 
     pairs = set(_iter_view_method_pairs(get_resolver().url_patterns))
-    assert pairs == {(MerchantView, "GET")}
+    assert pairs == {(MerchantView, "GET"), (SalesView, "GET"), (SalesView, "POST")}
 
 
 def test_api_key_authentication_is_not_a_default_authentication_class():

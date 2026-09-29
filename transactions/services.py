@@ -81,6 +81,27 @@ def record_sale(*, integration: Integration, location: Location, sale: SaleCreat
         return txn, created
 
 
+def _apply_filters(
+    qs: QuerySet[Transaction],
+    *,
+    location_id: uuid.UUID | str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: str | None = None,
+) -> QuerySet[Transaction]:
+    """Shared by list_transactions (MANAGER-scoped, dashboard) and
+    list_sales (merchant-wide, Generic REST API -- spec 06 Decision 13)."""
+    if location_id is not None:
+        qs = qs.filter(location_id=location_id)
+    if date_from is not None:
+        qs = qs.filter(occurred_at__gte=date_from)
+    if date_to is not None:
+        qs = qs.filter(occurred_at__lte=date_to)
+    if status is not None:
+        qs = qs.filter(status=status)
+    return qs
+
+
 def list_transactions(
     actor: TeamMember,
     *,
@@ -90,14 +111,22 @@ def list_transactions(
     status: str | None = None,
 ) -> QuerySet[Transaction]:
     qs = Transaction.objects.filter(location__in=accessible_locations(actor)).select_related("customer")
-    if location_id is not None:
-        qs = qs.filter(location_id=location_id)
-    if date_from is not None:
-        qs = qs.filter(occurred_at__gte=date_from)
-    if date_to is not None:
-        qs = qs.filter(occurred_at__lte=date_to)
-    if status is not None:
-        qs = qs.filter(status=status)
+    qs = _apply_filters(qs, location_id=location_id, date_from=date_from, date_to=date_to, status=status)
+    return qs.order_by("-created_at")
+
+
+def list_sales(
+    *,
+    location_id: uuid.UUID | str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: str | None = None,
+) -> QuerySet[Transaction]:
+    """GET /sales (spec 06 Decision 13): merchant-wide, not MANAGER-scoped
+    -- an API key is a merchant principal with no TeamMember/location
+    assignment, unlike list_transactions()."""
+    qs = Transaction.objects.select_related("customer")
+    qs = _apply_filters(qs, location_id=location_id, date_from=date_from, date_to=date_to, status=status)
     return qs.order_by("-created_at")
 
 

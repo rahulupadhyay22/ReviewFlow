@@ -136,6 +136,45 @@ def api_key_lookup_atomic(key_hash: str) -> Iterator[str]:
         _current_lookup_key_hash.reset(token)
 
 
+_current_lookup_integration_id = ContextVar("current_lookup_integration_id", default=None)
+
+
+def get_current_lookup_integration_id() -> uuid.UUID | None:
+    return _current_lookup_integration_id.get()
+
+
+@contextmanager
+def integration_lookup_atomic(integration_id: uuid.UUID | str) -> Iterator[uuid.UUID]:
+    """Pre-tenant Integration lookup only (spec 06 Decision 1): one
+    transaction with SET LOCAL app.current_integration_id, read by the
+    SELECT-only integration_lookup policy on integrations_integration.
+
+    Refuses to run inside a merchant context: the tenant_isolation and
+    integration_lookup policies are PERMISSIVE, so PostgreSQL ORs them, and
+    nesting (a savepoint) would expose the integration's row (and,
+    transitively, its merchant) to an unrelated merchant's transaction.
+
+    It must also be its own outermost transaction: durable=True makes Django
+    raise RuntimeError if it is opened inside any other atomic block (Django's
+    own test-case transactions excepted), so the SET LOCAL can never outlive
+    this block. Mirrors api_key_lookup_atomic().
+    """
+    if _current_merchant_id.get() is not None:
+        raise TenantContextError("integration_lookup_atomic() must not run inside a tenant context.")
+    if not isinstance(integration_id, uuid.UUID):
+        integration_id = uuid.UUID(str(integration_id))
+    token = _current_lookup_integration_id.set(integration_id)
+    try:
+        with transaction.atomic(durable=True):
+            with connection.cursor() as cursor:
+                # Transaction-local; str() of a uuid.UUID is canonical hex,
+                # so the literal is injection-safe.
+                cursor.execute(f"SET LOCAL app.current_integration_id = '{integration_id}'")
+            yield integration_id
+    finally:
+        _current_lookup_integration_id.reset(token)
+
+
 def tenant_task(fn):
     """Celery entry point: the task's first argument is always merchant_id.
 

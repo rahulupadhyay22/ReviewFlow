@@ -32,6 +32,7 @@ reviewflow/
 │   ├── woocommerce/  petpooja/  gofrugal/   # V1 product scope, phased implementation
 │   ├── webhook/                 # generic inbound webhook — V1 implementation priority
 │   ├── csv_import/              # V1 implementation priority
+│   ├── api/                     # Generic REST API (POST/GET /sales) — V1 implementation priority
 │   ├── zapier/  make/           # V1 product/architecture scope, implementation phase per roadmap
 ├── events/                      # IntegrationEvent inbox, idempotency, normalization
 ├── customers/                   # Customer model, opt-out

@@ -42,7 +42,8 @@ def _delete(client, url):
 
 def _connect(owner, provider="webhook", **kwargs):
     with tenant_context(owner.merchant_id), tenant_atomic():
-        return services.connect_integration(actor=owner, provider=provider, **kwargs)
+        integration, _ = services.connect_integration(actor=owner, provider=provider, **kwargs)
+        return integration
 
 
 # --- connect -------------------------------------------------------------
@@ -74,9 +75,10 @@ def test_owner_and_admin_can_connect(role, make_merchant, add_member, session_cl
 
 
 def test_connect_rejects_unregistered_provider(make_merchant, session_client):
+    # woocommerce is Phase 17 scope -- never registered by Phase 06.
     owner = make_merchant("A")
     client = session_client(owner.user.email)
-    resp = _post(client, _connect_url("webhook"), {})
+    resp = _post(client, _connect_url("woocommerce"), {})
     assert resp.status_code == 422
 
 

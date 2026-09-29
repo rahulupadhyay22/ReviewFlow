@@ -113,6 +113,9 @@ REST_FRAMEWORK = {
         # per-IP sliding-window limits.
         "api_key": env("API_KEY_RATE", default="600/min"),
         "api_key_ip": env("API_KEY_IP_RATE", default="1200/min"),
+        # Provider webhook receivers (spec 06 Decision 15): unauthenticated,
+        # so this runs before any lookup/signature check.
+        "webhook_ip": env("WEBHOOK_IP_RATE", default="1200/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
@@ -150,3 +153,15 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 CELERY_TIMEZONE = "UTC"
+
+# Cloudflare R2 (blobs only -- SAD.md, Security-Controls.md §File / Object
+# Storage). Read at settings load like every other platform secret; a CSV
+# upload/import that never runs (e.g. most test runs) never touches these.
+R2_ENDPOINT_URL = env("R2_ENDPOINT_URL", default="")
+R2_ACCESS_KEY_ID = env("R2_ACCESS_KEY_ID", default="")
+R2_SECRET_ACCESS_KEY = env("R2_SECRET_ACCESS_KEY", default="")
+R2_BUCKET = env("R2_BUCKET", default="")
+
+# CSV Import limits (spec 06 Decision 10).
+CSV_IMPORT_MAX_BYTES = env.int("CSV_IMPORT_MAX_BYTES", default=5 * 1024 * 1024)
+CSV_IMPORT_MAX_ROWS = env.int("CSV_IMPORT_MAX_ROWS", default=10_000)

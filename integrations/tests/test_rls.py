@@ -20,7 +20,8 @@ def _ids(sql, params=()):
 
 def _connect(owner):
     with tenant_context(owner.merchant_id), tenant_atomic():
-        return services.connect_integration(actor=owner, provider="webhook")
+        integration, _ = services.connect_integration(actor=owner, provider="webhook")
+        return integration
 
 
 def _map(owner, integration, location):

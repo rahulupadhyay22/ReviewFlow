@@ -34,6 +34,9 @@ class FakeAdapter(BaseAdapter):
     def verify(self, request):
         return True
 
+    def get_external_event_id(self, request, payload):
+        return str(payload.get("external_transaction_id", ""))
+
     def parse(self, payload):
         return dict(payload)
 
@@ -142,7 +145,10 @@ def make_integration(register_webhook_provider):
     def _make(merchant, provider="webhook", **kwargs):
         with tenant_context(merchant.id), tenant_atomic():
             owner = TeamMember.objects.get(merchant=merchant, role=TeamMember.Role.OWNER)
-            return integration_services.connect_integration(actor=owner, provider=provider, **kwargs)
+            integration, _ = integration_services.connect_integration(
+                actor=owner, provider=provider, **kwargs
+            )
+            return integration
 
     return _make
 

@@ -88,7 +88,21 @@ def _enqueue_processing(merchant_id: uuid.UUID, event_id: uuid.UUID):
         # Local import breaks the events.services <-> events.tasks cycle.
         from events.tasks import process_integration_event
 
-        process_integration_event.delay(merchant_id, event_id)
+        try:
+            process_integration_event.delay(merchant_id, event_id)
+        except Exception as exc:
+            # A broker outage must never turn an already-committed sale or
+            # webhook into a 500 (spec 06 Decision 9). The stale-RECEIVED
+            # sweep (retry_failed_events, 10 minutes) recovers the event.
+            # Log the class name and ids only -- never the exception
+            # message, which for a broker/connection error can embed a
+            # connection string or other operational detail.
+            logger.warning(
+                "IntegrationEvent %s (merchant %s) enqueue failed with %s",
+                event_id,
+                merchant_id,
+                type(exc).__name__,
+            )
 
     return _run
 

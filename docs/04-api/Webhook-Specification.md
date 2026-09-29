@@ -40,7 +40,7 @@ CampaignExecution create — (campaign_id, transaction_id) unique
 | `POST /webhooks/woocommerce` | WooCommerce | WooCommerce webhook secret |
 | `POST /webhooks/petpooja` | Petpooja | Petpooja's own signature scheme |
 | `POST /webhooks/gofrugal` | GoFrugal | GoFrugal's own signature scheme |
-| `POST /webhooks/generic/{integration_id}` | Any (merchant-configured mapping) | shared secret configured per `Integration` |
+| `POST /webhooks/generic/{integration_id}` | Any (merchant-configured mapping) | `X-ReviewFlow-Signature: sha256=<hex HMAC-SHA256>` over the raw body, keyed with a server-generated secret (never merchant-supplied) shown once at connect |
 | `POST /webhooks/whatsapp/status` | Meta | Meta's webhook signature |
 | `POST /webhooks/whatsapp/inbound` | Meta (customer replies, incl. opt-out keywords) | Meta's webhook signature |
 | `POST /webhooks/billing/{provider}` | Payment gateway | provider's signature scheme |

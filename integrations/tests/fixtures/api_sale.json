@@ -1,0 +1,11 @@
+{
+  "external_transaction_id": "ORD-55012",
+  "amount": "2300.00",
+  "currency": "INR",
+  "occurred_at": "2024-03-15T18:05:00+05:30",
+  "customer": {"phone": "+919800000003", "name": "Test Customer"},
+  "payment_method": "CASH",
+  "external_location_id": "store-blr-01",
+  "merchant_id": "00000000-0000-0000-0000-000000000000",
+  "location_id": "00000000-0000-0000-0000-000000000000"
+}

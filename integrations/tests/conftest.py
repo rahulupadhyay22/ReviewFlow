@@ -25,6 +25,9 @@ class _StubAdapter(BaseAdapter):
     def verify(self, request):
         return True
 
+    def get_external_event_id(self, request, payload):
+        return str(payload.get("external_transaction_id", ""))
+
     def parse(self, payload):
         return payload
 
@@ -117,5 +120,19 @@ def make_location():
         kwargs.setdefault("name", "Test Location")
         with tenant_context(merchant.id):
             return location_services.create_location(**kwargs)
+
+    return _make
+
+
+@pytest.fixture
+def make_key():
+    """Creates an ApiKey through the real service, for /sales tests
+    (spec 06 Decisions 8, 13, 14). Mirrors apikeys/tests/conftest.py's own
+    make_key -- fixtures don't cross app test-package boundaries."""
+    from apikeys import services as apikey_services
+
+    def _make(owner, scopes=("sales:write",)):
+        with tenant_context(owner.merchant_id):
+            return apikey_services.create_api_key(actor=owner, scopes=list(scopes))
 
     return _make

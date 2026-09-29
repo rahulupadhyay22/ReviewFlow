@@ -61,7 +61,7 @@ Explicit through-model for TeamMember-to-Location assignment (replaces an implic
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | merchant-level integration owner |
-| provider | enum | No | shopify, woocommerce, petpooja, gofrugal, webhook, csv, zapier, make — all V1 product scope; implementation phased |
+| provider | enum | No | shopify, woocommerce, petpooja, gofrugal, webhook, csv, zapier, make, api — all V1 product scope; implementation phased. `api` (Generic REST API, Phase 06) added after the original eight |
 | status | enum | No | CONNECTED, ERROR, DISCONNECTED |
 | credentials_encrypted | encrypted blob | Yes | never plaintext |
 | config_json | json | Yes | provider settings and generic field mapping |

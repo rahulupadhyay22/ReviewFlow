@@ -29,6 +29,9 @@ EXPECTED_REQUIREMENTS = {
     "djangorestframework==3.18.1",
     "pyotp==2.10.0",
     "cryptography==50.0.1",
+    # Phase 06 spec "New dependencies": Cloudflare R2 client for CSV Import
+    # staging (SAD.md fixes R2 as blob storage; no stdlib S3 client exists).
+    "boto3==1.43.103",
 }
 
 DOC_FILES_REQUIRING_CONFIG_CELERY = [
