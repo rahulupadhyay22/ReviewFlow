@@ -203,6 +203,10 @@ Source: `06-automation/Campaign-Engine.md`,
 - Refund cancellation before reservation
 - `QUOTA_EXCEEDED` 7-day expiry and automatic resume
 - Subscription state gate
+- Refund/void ingestion: a normalized refund event, the `Transaction.status`
+  update path, Shopify `refunds/create`, and `/sales` refunds (deferred here
+  from Phase 04 Decision 16 and Phase 06 Decision 12 — Phase 06 writes only
+  `COMPLETED` transactions)
 
 Source: `06-automation/Campaign-Engine.md`,
 `08-billing/Billing-Specification.md`,

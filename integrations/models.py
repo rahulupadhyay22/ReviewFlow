@@ -5,9 +5,26 @@
 Tenant ownership: MERCHANT (direct merchant_id on both tables).
 """
 from django.db import models
+from django.db.models import Q
 
+from core.exceptions import TenantContextError
 from core.managers import TenantScopedManager
 from core.models import BaseModel
+from core.tenancy import get_current_lookup_integration_id
+
+
+class IntegrationManager(TenantScopedManager):
+    def for_lookup_id(self, integration_id):
+        """The only merchant-unscoped read of Integration (spec 06
+        Decision 1): mirrors the integration_lookup RLS policy and only
+        works inside core.tenancy.integration_lookup_atomic() for this same
+        id. Used by provider webhook receivers, which must identify their
+        Integration before any tenant context exists."""
+        if get_current_lookup_integration_id() != integration_id:
+            raise TenantContextError(
+                "for_lookup_id() requires integration_lookup_atomic() for this id."
+            )
+        return models.Manager.get_queryset(self).filter(pk=integration_id)
 
 
 class Integration(BaseModel):
@@ -27,6 +44,9 @@ class Integration(BaseModel):
         CSV = "csv", "CSV Import"
         ZAPIER = "zapier", "Zapier"
         MAKE = "make", "Make"
+        # Generic REST API (spec 06 Decision 4) -- added after the original
+        # eight; still lowercase, per Data-Dictionary.md.
+        API = "api", "Generic REST API"
 
     class Status(models.TextChoices):
         CONNECTED = "CONNECTED", "Connected"
@@ -44,7 +64,21 @@ class Integration(BaseModel):
     credentials_encrypted = models.TextField(null=True, blank=True)
     config_json = models.JSONField(null=True, blank=True)
 
-    objects = TenantScopedManager()
+    objects = IntegrationManager()
+
+    class Meta:
+        constraints = [
+            # At most one CONNECTED "api" integration per merchant (spec 06
+            # Decision 4) -- POST /sales resolves the merchant's api
+            # integration unambiguously. connect_integration() catches the
+            # resulting IntegrityError in a savepoint; this is not
+            # check-then-insert.
+            models.UniqueConstraint(
+                fields=["merchant"],
+                condition=Q(provider="api", status="CONNECTED"),
+                name="uniq_integration_merchant_connected_api",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.get_provider_display()} ({self.merchant_id})"

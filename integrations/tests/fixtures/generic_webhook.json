@@ -1,0 +1,17 @@
+{
+  "event": "sale.completed",
+  "sent_at": "2024-03-15T14:32:10Z",
+  "order": {
+    "id": "POS-100245",
+    "total": "1249.50",
+    "currency": "INR",
+    "completed_at": "2024-03-15T14:32:05+05:30",
+    "items": [
+      {"sku": "SKU-0001", "qty": 2, "price": "499.75"},
+      {"sku": "SKU-0002", "qty": 1, "price": "250.00"}
+    ]
+  },
+  "customer": {"phone": "+919800000001", "name": "Test Customer"},
+  "payment": {"method": "UPI"},
+  "store": {"id": "store-blr-01", "name": "Test Store"}
+}

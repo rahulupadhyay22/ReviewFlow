@@ -68,6 +68,25 @@ def rls_select_by_key_hash(table, column="key_hash"):
     )
 
 
+def rls_select_by_integration_id(table, column="id"):
+    """SELECT-only integration_lookup policy (pre-tenant provider-webhook
+    Integration lookup, see core.tenancy.integration_lookup_atomic). Run
+    after rls_direct(), which enables and forces RLS. Never add a write
+    policy keyed on app.current_integration_id. The id is not secret (it
+    appears in the webhook URL); the lookup exists only so a receiver can
+    identify its Integration before any merchant context exists
+    (Phase 06 spec Decision 1 -- LOCKED DECISION CHANGE, approved).
+    """
+    current_integration = "NULLIF(current_setting('app.current_integration_id', true), '')::uuid"
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY integration_lookup ON {table} FOR SELECT "
+            f"USING ({column} = {current_integration});"
+        ),
+        reverse_sql=f"DROP POLICY integration_lookup ON {table};",
+    )
+
+
 def rls_via_parent(table, fk_column, parent_table):
     """Policy for tables reaching the tenant through a parent FK.
 

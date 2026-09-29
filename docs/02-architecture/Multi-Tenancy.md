@@ -41,6 +41,17 @@ A public-API request (`Authorization: Bearer rf_live_...`) carries no merchant; 
 - The application layer mirrors it: `ApiKey.objects.for_lookup_hash(key_hash)` is the only merchant-unscoped `ApiKey` read, and works only inside `api_key_lookup_atomic()` for that same hash.
 - After the lookup, the request's merchant context is set from `ApiKey.merchant_id` and the request proceeds under `tenant_isolation` as usual.
 
+#### Integration lookup — `integration_lookup` (signed off, Phase 06 spec Decision 1)
+
+A provider webhook request carries no merchant; the merchant is known only after the `Integration` row is read, identified from the `{integration_id}` in the webhook URL. `Integration` therefore carries a second, **SELECT-only** policy, `integration_lookup`: `id = app.current_integration_id`, alongside the standard `tenant_isolation` policy. `FORCE ROW LEVEL SECURITY` stays on.
+
+- `app.current_integration_id` is set only by `SET LOCAL` inside `core.tenancy.integration_lookup_atomic()` — transaction-local, never session-level, fail-closed when unset.
+- Unlike `api_key_lookup`, the id is **not a secret** — it appears in the webhook URL. The row is read only to obtain the signing secret and status that `verify()` needs; nothing is returned to the caller and nothing is written until the signature verifies. Every pre-verification failure (unknown id, malformed id, wrong-provider id, `DISCONNECTED` integration, missing/invalid signature) returns the identical `401`.
+- There is no write policy keyed on `app.current_integration_id`; every insert/update/delete still needs `tenant_isolation`. No `SECURITY DEFINER` function is used.
+- For the same reason as `self_membership`/`api_key_lookup` (PERMISSIVE policies are ORed), `integration_lookup_atomic()` refuses to run while a merchant context is active, and is always its own outermost (durable) transaction.
+- The application layer mirrors it: `Integration.objects.for_lookup_id(integration_id)` is the only merchant-unscoped `Integration` read, and works only inside `integration_lookup_atomic()` for that same id.
+- After the lookup, the request's merchant context is set from `Integration.merchant_id` and the request proceeds under `tenant_isolation` as usual.
+
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.

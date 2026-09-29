@@ -23,7 +23,8 @@ pytestmark = pytest.mark.django_db
 
 def _connect(owner, provider="webhook", **kwargs):
     with tenant_context(owner.merchant_id), tenant_atomic():
-        return services.connect_integration(actor=owner, provider=provider, **kwargs)
+        integration, _ = services.connect_integration(actor=owner, provider=provider, **kwargs)
+        return integration
 
 
 def _sale(**overrides):
@@ -42,10 +43,11 @@ def _sale(**overrides):
 
 
 def test_connect_integration_requires_registered_provider(make_merchant):
+    # woocommerce is Phase 17 scope -- never registered by Phase 06.
     owner = make_merchant("A")
     with tenant_context(owner.merchant_id), tenant_atomic():
         with pytest.raises(ValidationError):
-            services.connect_integration(actor=owner, provider="webhook")
+            services.connect_integration(actor=owner, provider="woocommerce")
 
 
 def test_connect_integration_rejects_unknown_provider(make_merchant, register_webhook_provider):

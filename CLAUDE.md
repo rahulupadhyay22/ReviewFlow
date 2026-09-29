@@ -96,6 +96,7 @@ apps that are not listed here.
     │   ├── shopify/     # V1 implementation priority
     │   ├── webhook/     # generic inbound webhook (merchant field mapping)
     │   ├── csv_import/  # CSV import
+    │   ├── api/         # Generic REST API (POST/GET /sales)
     │   ├── woocommerce/ petpooja/ gofrugal/   # V1 scope, phased implementation
     │   └── zapier/ make/                      # V1 scope, phased implementation
     ├── events/          # IntegrationEvent inbox, idempotency, normalization

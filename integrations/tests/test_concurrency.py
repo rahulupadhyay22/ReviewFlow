@@ -17,7 +17,8 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 def _connect(owner, provider="webhook", **kwargs):
     with tenant_context(owner.merchant_id), tenant_atomic():
-        return services.connect_integration(actor=owner, provider=provider, **kwargs)
+        integration, _ = services.connect_integration(actor=owner, provider=provider, **kwargs)
+        return integration
 
 
 def test_replace_location_mappings_locks_integration_before_mapping_queries(

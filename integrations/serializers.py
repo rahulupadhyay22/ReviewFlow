@@ -65,3 +65,7 @@ class MappingItemSerializer(serializers.Serializer):
 
 class ReplaceMappingsSerializer(serializers.Serializer):
     mappings = MappingItemSerializer(many=True)
+
+
+class CsvImportSerializer(serializers.Serializer):
+    file = serializers.FileField()

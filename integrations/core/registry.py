@@ -2,14 +2,22 @@
 §"The Adapter Contract": "resolves the adapter from the receiving
 Integration row ... rather than from the event's source string alone").
 
-Empty in Phase 04 -- no concrete adapter is registered here. Phase 06/17
-register their adapters under the provider identifier. Tests register a
-FakeAdapter via monkeypatch.setitem(ADAPTERS, ...).
+Phase 06 registers webhook/csv/api here. shopify is registered only by the
+06-shopify-app workstream. woocommerce/petpooja/gofrugal/zapier/make are
+Phase 17 scope and stay unregistered. Tests may still register a FakeAdapter
+via monkeypatch.setitem(ADAPTERS, ...).
 """
 from core.exceptions import ReviewFlowError
+from integrations.api.adapter import ApiAdapter
 from integrations.core.adapters import BaseAdapter
+from integrations.csv_import.adapter import CsvImportAdapter
+from integrations.webhook.adapter import GenericWebhookAdapter
 
-ADAPTERS: dict[str, type[BaseAdapter]] = {}
+ADAPTERS: dict[str, type[BaseAdapter]] = {
+    "webhook": GenericWebhookAdapter,
+    "csv": CsvImportAdapter,
+    "api": ApiAdapter,
+}
 
 
 class AdapterNotFound(ReviewFlowError):
@@ -19,6 +27,16 @@ class AdapterNotFound(ReviewFlowError):
 
 def is_registered(provider: str) -> bool:
     return provider in ADAPTERS
+
+
+def get_adapter_class(provider: str) -> type[BaseAdapter]:
+    """Resolves the adapter class for a provider without an Integration
+    instance -- used by connect_integration(), which validates/issues
+    credentials before any row exists."""
+    try:
+        return ADAPTERS[provider]
+    except KeyError:
+        raise AdapterNotFound(f"No adapter registered for provider {provider!r}.") from None
 
 
 def get_adapter(integration) -> BaseAdapter:

@@ -157,14 +157,19 @@ Location body: `{ id, name, address, phone, timezone, is_active, created_at, upd
 ## Sales (generic ingestion)
 
 ### `POST /sales`
-- **Auth**: API key with `sales:write` scope
-- **Request**: normalized `SaleCreated` shape (see `Webhook-Specification.md`)
-- **Response**: `201 { transaction_id, event_id }`
-- **Validation**: `external_transaction_id` required. Customer phone is optional: a missing or blank phone is a valid sale and creates a `Transaction` with `customer = null` (no `Customer` row). A phone that is supplied must be valid E.164; a supplied invalid phone is rejected with `422`.
-- **Idempotency**: repeating the same `external_transaction_id` for the same location is a no-op, returns the existing transaction
+- **Auth**: API key with `sales:write` scope. Session requests get `403` (no fallback).
+- **Request**: normalized `SaleCreated` shape (see `Webhook-Specification.md`). `merchant_id`, `location_id`, `source` and `event` in the body are ignored.
+- **Response** (Phase 06 spec Decision 8):
+  - `201 { transaction_id, event_id }` — newly created, and the event ended `PROCESSED`.
+  - `200 { transaction_id, event_id }` — a replay of an already-`PROCESSED` event.
+  - `202 { event_id, event_status, transaction_id: null }` — the event is persisted (`RECEIVED` or `FAILED`); the transaction is not yet available. `retry_failed_events` recovers it; replay later for the final result.
+  - `409 { error: { code: "sale_not_processed", message }, event_id, event_status }` — the event is terminal (`DEAD_LETTER` or `CANCELLED`) and will never produce a transaction.
+- **Validation**: `external_transaction_id` required. Customer phone is optional: a missing or blank phone is a valid sale and creates a `Transaction` with `customer = null` (no `Customer` row). A phone that is supplied must be valid E.164; a supplied invalid phone is rejected with `422` (the safe error code, lowercased, e.g. `invalid_phone`). `422 location_unresolved` if the sale can't be mapped to a location. `422 integration_not_connected` if the merchant has no `CONNECTED` Generic REST API integration.
+- **Idempotency**: repeating the same `(external_location_id, external_transaction_id)` pair is a no-op at the inbox (`UNIQUE(integration_id, external_event_id)`), and `(location_id, external_transaction_id)` backstops it at the transaction level.
 
 ### `GET /sales`
-- Same filters/pagination as `/transactions`
+- **Auth**: API key with `transactions:read` scope
+- Same filters/pagination/body as `/transactions`, but merchant-wide (not MANAGER-location-scoped: a key has no `TeamMember`)
 
 ---
 
@@ -262,9 +267,13 @@ On every endpoint that accepts an API key: `401` with `WWW-Authenticate: Bearer`
 ### `POST /integrations/{provider}/connect`
 - OAuth-style or credential-based connection flow, provider-specific — see `../05-integrations/Integration-Architecture.md`
 - Integration is created at merchant level; locations are attached through `IntegrationLocationMapping`.
+- Phase 06 providers:
+  - `webhook` (Generic Webhook): rejects client-supplied `credentials` with `422`; requires `config_json.field_map` (§Generic-Webhook.md). The server generates a `whsec_...` signing secret and returns it **once**, as `webhook_secret` in this `201` response only — never again.
+  - `csv` (CSV Import), `api` (Generic REST API): reject any `credentials` with `422`. `api` allows at most one `CONNECTED` integration per merchant; connecting a second returns `409 integration_exists`.
+  - `shopify`, `woocommerce`, `petpooja`, `gofrugal`, `zapier`, `make`: unregistered in this phase — `422`.
 
 ### `GET /integrations`
-- Returns merchant-level integrations. Location mappings are returned separately or embedded as mapping summaries.
+- Returns merchant-level integrations. Location mappings are returned separately or embedded as mapping summaries. Never includes `webhook_secret` or any other credential.
 
 ### `POST /integrations/{id}/locations`
 - **Request**: `{ location_id, config_json?, is_active? }`
@@ -275,7 +284,14 @@ On every endpoint that accepts an API key: `401` with `WWW-Authenticate: Bearer`
 - Replaces the authenticated merchant's mapping set atomically.
 
 ### `PATCH /integrations/{id}` (update merchant-level `config_json`)
+- Provider-specific validation applies (e.g. `webhook`'s `field_map` rules).
+
 ### `DELETE /integrations/{id}` (disconnect; mappings remain as historical configuration but become inactive; the integration's pending `RECEIVED`/`FAILED` events become `CANCELLED` in the same transaction and are never processed)
+
+### `POST /integrations/{id}/csv-imports` (Phase 06 spec Decision 10)
+- **Auth**: session, OWNER/ADMIN. **Request**: `multipart/form-data`, field `file`.
+- The whole file is validated synchronously (required columns, every row) before anything is stored; an invalid file returns `422` with `field_errors: { "row_<n>": [<safe code>], ... }` (first 50 bad rows).
+- A valid file is staged in Cloudflare R2 under a server-built key and returns `202 { rows }`; a background task records one `IntegrationEvent` per row and deletes the staged file once every row is recorded.
 
 ---
 
