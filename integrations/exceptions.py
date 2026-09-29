@@ -115,3 +115,65 @@ class LocationUnresolved(ReviewFlowError):
 
     http_status = 422
     code = "location_unresolved"
+
+
+# -- 06-shopify-app scope (spec .claude/specs/06-shopify-app.md) --
+
+
+class ShopifyInstallInvalid(ReviewFlowError):
+    """The install/callback failed a Shopify-required or ReviewFlow check
+    (bad hmac, expired/reused state, shop mismatch, missing scope, a
+    myshopifyDomain that doesn't match the OAuth-verified shop, or a
+    malformed shop GID). Nothing is stored for this response (Decision 3,
+    merchant flow steps 1, 3, 5a)."""
+
+    http_status = 400
+    code = "shopify_install_invalid"
+
+    def __init__(self):
+        super().__init__("The Shopify installation could not be verified.")
+
+
+class ShopifyInstallExpired(ReviewFlowError):
+    """POST /integrations/shopify/link with no pending installation, or one
+    older than 15 minutes, or already consumed (single-use). Reinstalling
+    from Shopify creates a fresh pending installation (Decision 3, merchant
+    flow step 4)."""
+
+    http_status = 409
+    code = "shopify_install_expired"
+
+    def __init__(self):
+        super().__init__("The pending Shopify installation has expired. Reinstall from Shopify.")
+
+
+class ShopifyUnavailable(ReviewFlowError):
+    """A Shopify HTTP call (token exchange, shop identity, webhook
+    registration/deletion) timed out, transport-failed, returned a
+    non-200, or returned GraphQL errors/userErrors (Decision 3, merchant
+    flow steps 3, 5a, 6-8)."""
+
+    http_status = 502
+    code = "shopify_unavailable"
+
+    def __init__(self):
+        super().__init__("Shopify did not respond as expected.")
+
+
+class ShopifyConnectNotSupported(ReviewFlowError):
+    """The generic credentials-based connect endpoint can never create a
+    Shopify Integration (spec O2, user decision 2026-09-29): the OAuth
+    install/link flow is the only path. Rendered as the standard
+    validation_error shape via ReviewFlowError.field_errors (core/api.py),
+    not the ad hoc {code, message} shape -- so this looks exactly like any
+    other provider-validation 400/422 to a caller, just with a different
+    status code."""
+
+    http_status = 400
+    code = "validation_error"
+
+    def __init__(self):
+        message = "Shopify must be connected through the Shopify OAuth installation/linking flow."
+        # Built per instance, never a shared class-level dict.
+        self.field_errors = {"provider": [message]}
+        super().__init__(message)

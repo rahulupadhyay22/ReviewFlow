@@ -24,3 +24,19 @@ class GenericWebhookView(APIView):
     def post(self, request, integration_id):
         services.receive_webhook(provider="webhook", integration_id=integration_id, request=request)
         return Response({}, status=200)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class ShopifyWebhookView(APIView):
+    """The application-created shop-specific subscription URI for
+    orders/paid and app/uninstalled (spec 06-shopify-app Decisions 2, 3).
+    Same posture as GenericWebhookView -- the signature is the only
+    authentication."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [WebhookIpRateThrottle]
+
+    def post(self, request, integration_id):
+        services.receive_webhook(provider="shopify", integration_id=integration_id, request=request)
+        return Response({}, status=200)

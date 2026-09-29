@@ -28,5 +28,20 @@ urlpatterns = [
         receivers.GenericWebhookView.as_view(),
         name="webhook-generic",
     ),
+    # <str:integration_id>, same reasoning as webhook-generic above: a
+    # malformed id must reach the view and get the identical 401 (spec
+    # 06-shopify-app Decision 1), not a generic 404 from the URL converter.
+    path(
+        "webhooks/shopify/<str:integration_id>",
+        receivers.ShopifyWebhookView.as_view(),
+        name="webhook-shopify",
+    ),
     path("sales", views.SalesView.as_view(), name="sales"),
+    # Shopify app installation (spec 06-shopify-app Decision 3). No
+    # merchant-entered shop domain anywhere -- `shop` comes only from
+    # Shopify's own redirect to /install.
+    path("integrations/shopify/install", views.ShopifyInstallView.as_view(), name="shopify-install"),
+    path("integrations/shopify/callback", views.ShopifyCallbackView.as_view(), name="shopify-callback"),
+    path("integrations/shopify/pending", views.ShopifyPendingView.as_view(), name="shopify-pending"),
+    path("integrations/shopify/link", views.ShopifyLinkView.as_view(), name="shopify-link"),
 ]

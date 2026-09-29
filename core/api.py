@@ -24,7 +24,11 @@ def exception_handler(exc, context):
     # Handled here because DRF downgrades AuthenticationFailed to 403 under
     # session auth.
     if isinstance(exc, ReviewFlowError) and hasattr(exc, "http_status"):
-        return _error(exc.code, str(exc), exc.http_status)
+        # field_errors is additive: only ShopifyConnectNotSupported (spec
+        # 06-shopify-app O2) sets it today, so every other ReviewFlowError's
+        # response is unchanged (getattr defaults to None, which _error
+        # already treats as "omit the key").
+        return _error(exc.code, str(exc), exc.http_status, getattr(exc, "field_errors", None))
 
     if isinstance(exc, DjangoValidationError):
         exc = exceptions.ValidationError(as_serializer_error(exc))

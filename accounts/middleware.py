@@ -7,7 +7,7 @@ from django.urls import Resolver404, resolve, reverse
 # refuses to run inside an active merchant context, and the receiver's own
 # signature/lookup outcome -- not the caller's unrelated session -- must
 # decide the response (spec 06 Definition of done).
-_PRE_TENANT_URL_NAMES = frozenset({"webhook-generic"})
+_PRE_TENANT_URL_NAMES = frozenset({"webhook-generic", "webhook-shopify"})
 
 
 class SessionMerchantMiddleware:

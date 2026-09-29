@@ -9,7 +9,7 @@ from django.core.cache import cache
 from core.crypto import decrypt
 from core.tenancy import tenant_atomic, tenant_context
 from integrations import services
-from integrations.exceptions import IntegrationExists
+from integrations.exceptions import IntegrationExists, ShopifyConnectNotSupported
 from integrations.models import Integration
 
 pytestmark = pytest.mark.django_db
@@ -188,22 +188,71 @@ def test_connect_integration_service_raises_integration_exists_for_duplicate_api
             services.connect_integration(actor=owner, provider="api")
 
 
-# --- shopify / woocommerce remain unregistered in this workstream ----
+# --- Phase 17 providers remain unregistered ------------------------------
 
 
-@pytest.mark.parametrize("provider", ["shopify", "woocommerce", "petpooja", "gofrugal", "zapier", "make"])
-def test_phase17_and_shopify_providers_are_unregistered(make_merchant, session_client, provider):
+@pytest.mark.parametrize("provider", ["woocommerce", "petpooja", "gofrugal", "zapier", "make"])
+def test_phase17_providers_are_unregistered(make_merchant, session_client, provider):
     owner = make_merchant("A")
     client = session_client(owner.user.email)
     resp = _post(client, _connect_url(provider), {})
     assert resp.status_code == 422
 
 
-def test_shopify_patch_always_returns_422_once_registered_is_not_applicable_yet(make_merchant):
-    """Documents the Phase 06/A boundary: shopify has no adapter here, so
-    connect_integration() itself rejects it with 422 -- the Shopify-specific
-    "PATCH always 422" rule is exercised in the 06-shopify-app workstream."""
+# --- shopify: the OAuth install/link flow is the only creation path ------
+# (spec 06-shopify-app O2, user decision 2026-09-29). Full coverage in
+# test_shopify.py; this module only confirms the generic connect path.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"credentials": {"access_token": "shpat_fake", "refresh_token": "fake", "scope": "read_orders"}},
+        {"credentials": {"webhook_secret": "whsec_fake"}},
+        {"config_json": {"shop_domain": "test-shop.myshopify.com", "shop_id": "123"}},
+        {"credentials": "not-an-object"},
+    ],
+)
+def test_shopify_connect_always_returns_400_and_creates_nothing(make_merchant, session_client, body):
+    owner = make_merchant("A")
+    client = session_client(owner.user.email)
+    resp = _post(client, _connect_url("shopify"), body)
+    assert resp.status_code == 400, resp.content
+    error = resp.json()["error"]
+    assert error["code"] == "validation_error"
+    assert "provider" in error["field_errors"]
+    with tenant_context(owner.merchant_id):
+        assert not Integration.objects.filter(provider="shopify").exists()
+
+
+def test_shopify_connect_service_raises_before_any_credential_is_read(make_merchant):
+    """assert_generic_connect_allowed() is the FIRST line of
+    connect_integration() -- defense in depth for any caller, not only the
+    view (spec O2)."""
     owner = make_merchant("A")
     with tenant_context(owner.merchant_id), tenant_atomic():
+        with pytest.raises(ShopifyConnectNotSupported):
+            services.connect_integration(
+                actor=owner, provider="shopify", credentials={"access_token": "shpat_fake"}
+            )
+        assert not Integration.objects.filter(provider="shopify").exists()
+
+
+def test_shopify_patch_always_returns_422(make_merchant):
+    """The Shopify-specific "PATCH always 422" rule (spec Decision 6):
+    config_json is server-managed. Bypasses the OAuth flow by inserting the
+    Integration directly, since 06-shopify-app's own install/link tests
+    cover the real path end to end."""
+    owner = make_merchant("A")
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        integration = Integration.objects.create(
+            merchant_id=owner.merchant_id,
+            provider="shopify",
+            status=Integration.Status.CONNECTED,
+            config_json={"shop_domain": "test-shop.myshopify.com", "shop_id": "123"},
+        )
         with pytest.raises(Exception):
-            services.connect_integration(actor=owner, provider="shopify")
+            services.update_integration_config(integration, config_json={"shop_domain": "other.myshopify.com"})
+        integration.refresh_from_db()
+        assert integration.config_json == {"shop_domain": "test-shop.myshopify.com", "shop_id": "123"}

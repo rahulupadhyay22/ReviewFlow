@@ -28,7 +28,7 @@ Three distinct authentication mechanisms are used, for three distinct callers. N
 ## 3. Inbound Provider Webhooks
 
 - Not authenticated via API key. Each provider's own signature scheme is verified inside that provider's adapter:
-  - Shopify: `X-Shopify-Hmac-SHA256` header, verified against the integration's stored webhook secret. (Shopify app workstream, not yet implemented.)
+  - Shopify: `X-Shopify-Hmac-Sha256` header — base64 HMAC-SHA256 over the raw request body, keyed with the **platform** `SHOPIFY_CLIENT_SECRET` (the ReviewFlow Shopify app's own client secret), never a per-merchant secret. During a client-secret rotation, verification also accepts `SHOPIFY_CLIENT_SECRET_PREVIOUS`, so a delivery signed with either the current or the previous secret passes. After the HMAC, the receiver additionally requires `X-Shopify-Shop-Domain` to equal the integration's stored `shop_domain` — defense in depth only, since Shopify's HMAC covers the raw body, not headers. See `05-integrations/Shopify.md`.
   - Petpooja / GoFrugal: provider-specific signature header, verified per their documentation at implementation time.
   - Generic webhook: `X-ReviewFlow-Signature: sha256=<hex HMAC-SHA256>` over the raw request body, keyed with a **server-generated** secret (`whsec_...`) issued once at connect time and never accepted from the merchant.
 - Every receiver first identifies its `Integration` via the pre-tenant `integration_lookup` lookup (Multi-Tenancy.md §"Integration lookup"), keyed on the `{integration_id}` in the URL — not a secret, since the row is only used to fetch the signing secret and nothing is returned or stored before the signature verifies.
