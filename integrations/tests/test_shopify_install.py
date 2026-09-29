@@ -2,9 +2,11 @@
 .claude/specs/06-shopify-app.md Decision 3, merchant flow steps 1-8; O2).
 Shopify's own HTTP endpoints are replaced by a fake
 integrations.shopify.services._shopify_post -- no network calls."""
+import base64
 import hashlib
 import hmac
 import json
+import threading
 from datetime import timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -12,6 +14,7 @@ import pytest
 from django.core.cache import cache
 from django.test import override_settings
 from django.utils import timezone as dj_timezone
+from rest_framework.test import APIClient
 
 from auditlog.models import AuditLog
 from core.crypto import decrypt
@@ -136,6 +139,30 @@ def fake_shopify(monkeypatch):
     fake = FakeShopify()
     monkeypatch.setattr(shopify_services, "_shopify_post", fake)
     return fake
+
+
+def _deliver(client, path, body: bytes, *, webhook_id, topic="orders/paid", shop=SHOP):
+    """A Shopify webhook delivery signed with the test platform secret."""
+    signature = base64.b64encode(hmac.new(CLIENT_SECRET.encode(), body, hashlib.sha256).digest()).decode()
+    return client.generic(
+        "POST",
+        path,
+        data=body,
+        content_type="application/json",
+        HTTP_X_SHOPIFY_HMAC_SHA256=signature,
+        HTTP_X_SHOPIFY_TOPIC=topic,
+        HTTP_X_SHOPIFY_SHOP_DOMAIN=shop,
+        HTTP_X_SHOPIFY_WEBHOOK_ID=webhook_id,
+    )
+
+
+def _link_as_owner(client, owner_client):
+    """Moves the anonymous install's pending installation into the logged-in
+    OWNER's session, then links."""
+    session = owner_client.session
+    session["shopify_pending"] = client.session["shopify_pending"]
+    session.save()
+    return owner_client.post(LINK_URL, HTTP_X_CSRFTOKEN=owner_client.csrf)
 
 
 def _install_then_callback(client, *, shop=SHOP, secret=CLIENT_SECRET):
@@ -291,9 +318,18 @@ def test_link_manager_gets_403_and_pending_remains(client, fake_shopify, make_me
         session = manager_client.session
         session["shopify_pending"] = client.session["shopify_pending"]
         session.save()
+        pending_before = dict(manager_client.session["shopify_pending"])
         resp = manager_client.post(LINK_URL, HTTP_X_CSRFTOKEN=manager_client.csrf)
     assert resp.status_code == 403
-    assert "shopify_pending" in session
+    # Independent proof: re-load the session from the store (a fresh
+    # SessionStore, not the object this test mutated) -- the pending
+    # installation was NOT popped by the 403, and is still valid.
+    fresh = manager_client.session
+    assert fresh["shopify_pending"] == pending_before
+    with _override():
+        assert shopify_services.pending_shopify_shop(session=fresh) == SHOP
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert not Integration.objects.filter(provider="shopify").exists()
 
 
 def test_link_missing_csrf_returns_403(client, fake_shopify, make_merchant, session_client):
@@ -472,11 +508,16 @@ def test_registration_failure_leaves_nothing_behind(client, make_merchant, sessi
         session["shopify_pending"] = client.session["shopify_pending"]
         session.save()
         resp = owner_client.post(LINK_URL, HTTP_X_CSRFTOKEN=owner_client.csrf)
-    assert resp.status_code == 502
+        assert resp.status_code == 502
+        # The first subscription's would-be uri: a delivery to it gets 401,
+        # because its Integration never committed.
+        would_be_path = urlsplit(fake.create_calls[0][1]).path
+        delivery = _deliver(APIClient(), would_be_path, json.dumps({"id": 1}).encode(), webhook_id="wh-orphan")
+    assert delivery.status_code == 401
     with tenant_context(owner.merchant_id), tenant_atomic():
         assert not Integration.objects.filter(provider="shopify").exists()
         assert not AuditLog.objects.filter(action="integration.connected").exists()
-    assert len(fake.delete_calls) == 1
+    assert fake.delete_calls == ["gid://shopify/WebhookSubscription/1"]
 
 
 def test_registration_failure_with_delete_also_failing(client, make_merchant, session_client, monkeypatch, caplog):
@@ -489,11 +530,28 @@ def test_registration_failure_with_delete_also_failing(client, make_merchant, se
         session = owner_client.session
         session["shopify_pending"] = client.session["shopify_pending"]
         session.save()
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("DEBUG"):
             resp = owner_client.post(LINK_URL, HTTP_X_CSRFTOKEN=owner_client.csrf)
+            would_be_path = urlsplit(fake.create_calls[0][1]).path
+            delivery = _deliver(APIClient(), would_be_path, json.dumps({"id": 1}).encode(), webhook_id="wh-orphan")
     assert resp.status_code == 502
+    assert delivery.status_code == 401
     with tenant_context(owner.merchant_id), tenant_atomic():
         assert not Integration.objects.filter(provider="shopify").exists()
+
+    # Exactly one failed-delete record, carrying ONLY the subscription id
+    # and the exception class name (Decision 3, step 8).
+    delete_records = [
+        r for r in caplog.records
+        if r.name == "integrations.shopify.services" and "webhookSubscriptionDelete failed" in r.msg
+    ]
+    assert len(delete_records) == 1
+    assert delete_records[0].args == ("gid://shopify/WebhookSubscription/1", "Exception")
+    # Neither the failed delete nor the orphan delivery logged anything
+    # sensitive.
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    for value in (CLIENT_SECRET, "shpat_test_token", "shprt_test_token", "test-code", "simulated delete failure"):
+        assert value not in logged, f"{value!r} leaked into logs"
 
 
 def test_shop_identity_failure_returns_502_and_stores_nothing(client, make_merchant, session_client, monkeypatch):
@@ -589,3 +647,193 @@ def test_connect_not_supported_field_errors_are_per_instance():
         "Shopify must be connected through the Shopify OAuth installation/linking flow."
     ]
     assert "field_errors" not in ShopifyConnectNotSupported.__dict__
+
+
+# --- Final pre-PR audit: previously unproven DoD items ------------------------
+
+
+def test_install_is_throttled_per_ip(client, monkeypatch):
+    """/install reuses WebhookIpRateThrottle: the (N+1)th request gets 429
+    with Retry-After, and no new OAuth state is issued for it."""
+    from rest_framework.settings import api_settings as drf_api_settings
+
+    from integrations.throttling import WebhookIpRateThrottle
+
+    merged = {**drf_api_settings.DEFAULT_THROTTLE_RATES, "webhook_ip": "1/min"}
+    monkeypatch.setattr(WebhookIpRateThrottle, "THROTTLE_RATES", merged)
+    with _override():
+        first = client.get(INSTALL_URL, {"shop": SHOP})
+        state_after_first = client.session["shopify_oauth"]["state"]
+        second = client.get(INSTALL_URL, {"shop": SHOP})
+    assert first.status_code == 302
+    assert second.status_code == 429
+    assert "Retry-After" in second
+    assert client.session["shopify_oauth"]["state"] == state_after_first
+
+
+class _ProbeDuringRegistration(FakeShopify):
+    """While the link request's provisional Integration is inserted but not
+    yet committed (inside the first webhookSubscriptionCreate call),
+    deliver a signed webhook to its uri from ANOTHER thread -- which uses
+    another database connection -- and record the response."""
+
+    def __init__(self):
+        super().__init__()
+        self.probe_status = None
+        self.probe_path = None
+
+    def __call__(self, url, data, headers, *, timeout=10):
+        if self.probe_path is None and b"webhookSubscriptionCreate" in data:
+            uri = json.loads(data)["variables"]["webhookSubscription"]["uri"]
+            self.probe_path = urlsplit(uri).path
+
+            def _probe():
+                from django.db import connection
+
+                try:
+                    body = json.dumps({"id": 1}).encode()
+                    self.probe_status = _deliver(APIClient(), self.probe_path, body, webhook_id="wh-probe").status_code
+                finally:
+                    connection.close()
+
+            thread = threading.Thread(target=_probe)
+            thread.start()
+            thread.join()
+        return super().__call__(url, data, headers, timeout=timeout)
+
+
+def test_provisional_integration_is_invisible_until_link_commits(client, make_merchant, session_client, monkeypatch):
+    fake = _ProbeDuringRegistration()
+    monkeypatch.setattr(shopify_services, "_shopify_post", fake)
+    owner = make_merchant("A")
+    with _override():
+        _install_then_callback(client)
+        link = _link_as_owner(client, session_client(owner.user.email))
+        assert link.status_code == 201, link.content
+        # The same uri, after the link request committed. A verified
+        # non-orders/paid topic returns 200 and stores nothing.
+        after = _deliver(
+            APIClient(), fake.probe_path, json.dumps({"id": 1}).encode(), webhook_id="wh-after", topic="refunds/create"
+        )
+
+    # On a second connection, while the link transaction was still open,
+    # the Integration did not exist yet: the identical 401.
+    assert fake.probe_status == 401
+    assert fake.probe_path == f"/api/v1/webhooks/shopify/{link.json()['id']}"
+    # Once committed, the same Integration is found and verifies.
+    assert after.status_code == 200
+
+
+def test_merchant_a_cannot_use_merchant_b_integration_for_same_shop(
+    client, fake_shopify, make_merchant, session_client, django_capture_on_commit_callbacks
+):
+    """Merchant B already has this shop connected. Merchant A installs and
+    links the same shop: A gets its OWN Integration, B's is untouched, A's
+    session cannot read, edit or disconnect B's, and a delivery to A's URL
+    never writes under B."""
+    from events.models import IntegrationEvent
+
+    owner_a = make_merchant("A")
+    owner_b = make_merchant("B")
+    with tenant_context(owner_b.merchant_id), tenant_atomic():
+        b_integration = Integration.objects.create(
+            merchant_id=owner_b.merchant_id,
+            provider=Integration.Provider.SHOPIFY,
+            status=Integration.Status.CONNECTED,
+            config_json={"shop_domain": SHOP, "shop_id": "820982911946154508", "webhook_subscription_ids": []},
+        )
+        b_before = (b_integration.status, b_integration.config_json, b_integration.updated_at)
+        b_audit_before = AuditLog.objects.count()
+
+    with open("integrations/tests/fixtures/shopify_orders_paid_2026-07.json", encoding="utf-8") as f:
+        order_body = f.read().encode()
+
+    with _override():
+        _install_then_callback(client)
+        a_client = session_client(owner_a.user.email)
+        link = _link_as_owner(client, a_client)
+        assert link.status_code == 201, link.content
+        a_integration_id = link.json()["id"]
+
+        # A's session cannot see or reach B's Integration.
+        listed = [row["id"] for row in a_client.get("/api/v1/integrations").json()["results"]]
+        assert listed == [a_integration_id]
+        b_url = f"/api/v1/integrations/{b_integration.id}"
+        assert (
+            a_client.patch(b_url, {"config_json": {}}, format="json", HTTP_X_CSRFTOKEN=a_client.csrf).status_code
+            == 404
+        )
+        assert a_client.delete(b_url, HTTP_X_CSRFTOKEN=a_client.csrf).status_code == 404
+
+        # A delivery to A's URL is recorded under A only.
+        with django_capture_on_commit_callbacks(execute=True):
+            delivery = _deliver(APIClient(), f"/api/v1/webhooks/shopify/{a_integration_id}", order_body, webhook_id="wh-a")
+    assert delivery.status_code == 200
+
+    assert a_integration_id != str(b_integration.id)
+    with tenant_context(owner_a.merchant_id), tenant_atomic():
+        a_integration = Integration.objects.get(pk=a_integration_id)
+        assert a_integration.merchant_id == owner_a.merchant_id
+        assert IntegrationEvent.objects.filter(integration_id=a_integration_id).count() == 1
+    with tenant_context(owner_b.merchant_id), tenant_atomic():
+        b_integration.refresh_from_db()
+        assert (b_integration.status, b_integration.config_json, b_integration.updated_at) == b_before
+        assert not IntegrationEvent.objects.exists()
+        assert AuditLog.objects.count() == b_audit_before
+
+
+def test_install_flow_logs_contain_no_secret_token_code_or_body(client, make_merchant, session_client, monkeypatch, caplog):
+    """caplog across install, a rejected callback, a successful callback,
+    link, and a registration failure with a failing delete: no record
+    carries the client secret, a token, the OAuth code, the state, an
+    hmac, or a Shopify request/response body."""
+    owner = make_merchant("A")
+    owner2 = make_merchant("B")
+    captured_bodies = []
+
+    class _Recording(FakeShopify):
+        def __call__(self, url, data, headers, *, timeout=10):
+            captured_bodies.append(data.decode())
+            result = super().__call__(url, data, headers, timeout=timeout)
+            captured_bodies.append(json.dumps(result))
+            return result
+
+    monkeypatch.setattr(shopify_services, "_shopify_post", _Recording())
+    with caplog.at_level("DEBUG"):
+        with _override():
+            install = client.get(INSTALL_URL, {"shop": SHOP})
+            state = parse_qs(urlsplit(install["Location"]).query)["state"][0]
+            bad_query = _callback_query(state, code="bad-code")
+            bad_query["hmac"] = "0" * 64
+            rejected = client.get(CALLBACK_URL, bad_query)
+            # The hmac check runs before the state is popped, so the real
+            # callback with the same state still succeeds.
+            good_query = _callback_query(state)
+            callback = client.get(CALLBACK_URL, good_query)
+            link = _link_as_owner(client, session_client(owner.user.email))
+
+            monkeypatch.setattr(shopify_services, "_shopify_post", _Recording(fail_on="second_create", fail_delete=True))
+            client2 = type(client)()
+            _install_then_callback(client2)
+            failed_link = _link_as_owner(client2, session_client(owner2.user.email))
+
+    assert (rejected.status_code, callback.status_code, link.status_code, failed_link.status_code) == (400, 302, 201, 502)
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    forbidden = [
+        CLIENT_SECRET,
+        "shpat_test_token",
+        "shprt_test_token",
+        "test-code",
+        "bad-code",
+        state,
+        good_query["hmac"],
+    ]
+    for value in forbidden:
+        assert value not in logged, f"{value!r} leaked into logs"
+    # No Shopify request or response body was logged.
+    assert captured_bodies
+    for body in captured_bodies:
+        assert body not in logged
+    assert "webhookSubscriptionCreate" not in logged
+    assert "myshopifyDomain" not in logged

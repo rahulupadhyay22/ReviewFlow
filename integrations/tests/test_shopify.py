@@ -200,32 +200,77 @@ def test_unknown_integration_id_returns_401(django_capture_on_commit_callbacks):
     assert resp.status_code == 401
 
 
+def test_malformed_integration_id_returns_401(django_capture_on_commit_callbacks):
+    """A non-UUID id reaches the view (<str:> converter) and gets the
+    identical 401, never a 404 or 500 (Decision 1)."""
+    client = APIClient()
+    body = json.dumps(_load_fixture()).encode()
+    with _override():
+        with django_capture_on_commit_callbacks(execute=True):
+            resp = client.generic(
+                "POST",
+                _url("not-a-uuid"),
+                data=body,
+                content_type="application/json",
+                HTTP_X_SHOPIFY_HMAC_SHA256=_sign(SECRET, body),
+                HTTP_X_SHOPIFY_TOPIC="orders/paid",
+                HTTP_X_SHOPIFY_SHOP_DOMAIN=SHOP_DOMAIN,
+                HTTP_X_SHOPIFY_WEBHOOK_ID="wh-1",
+            )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "invalid_signature"
+
+
 def test_wrong_provider_id_returns_401_both_directions(make_merchant, django_capture_on_commit_callbacks):
+    """A real Generic Webhook (`webhook`) integration id on the Shopify URL,
+    and the Shopify id on the generic URL. Each request carries a
+    signature that would verify for its own URL's provider, so the 401
+    comes from the provider check, not a bad signature."""
     owner = make_merchant("A")
     shopify_integration = _connect_shopify(owner)
     with tenant_context(owner.merchant_id), tenant_atomic():
-        csv_integration, _ = services.connect_integration(actor=owner, provider="csv")
+        webhook_integration, issued = services.connect_integration(
+            actor=owner,
+            provider="webhook",
+            config_json={
+                "field_map": {
+                    "external_transaction_id": "order.id",
+                    "amount": "order.total",
+                    "occurred_at": "order.completed_at",
+                },
+                "default_currency": "INR",
+            },
+        )
+    webhook_secret = issued["webhook_secret"]
     client = APIClient()
+
+    # The webhook integration's id on the Shopify URL, with a valid Shopify
+    # platform-secret HMAC and a shop domain.
     body = json.dumps(_load_fixture()).encode()
-
-    # A csv integration id on the Shopify URL: csv's verify() always
-    # returns False, so this is 401 regardless -- but it also proves the
-    # provider mismatch, since the receiver checks provider == "shopify"
-    # before ever calling verify().
     with _override():
-        resp = _post(client, csv_integration.id, body, capture=django_capture_on_commit_callbacks)
-        assert resp.status_code == 401
+        resp = _post(client, webhook_integration.id, body, capture=django_capture_on_commit_callbacks)
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "invalid_signature"
 
-    # A shopify integration id on the generic webhook URL.
+    # The Shopify integration's id on the generic URL, signed with the real
+    # generic webhook secret.
+    generic_body = json.dumps(
+        {"order": {"id": "INV-1", "total": "10.00", "completed_at": "2024-01-01T10:00:00Z"}}
+    ).encode()
+    signature = "sha256=" + hmac.new(webhook_secret.encode(), generic_body, hashlib.sha256).hexdigest()
     with django_capture_on_commit_callbacks(execute=True):
         resp2 = client.generic(
             "POST",
             _generic_url(shopify_integration.id),
-            data=b"{}",
+            data=generic_body,
             content_type="application/json",
-            HTTP_X_REVIEWFLOW_SIGNATURE="sha256=doesnotmatter",
+            HTTP_X_REVIEWFLOW_SIGNATURE=signature,
         )
     assert resp2.status_code == 401
+    assert resp2.json()["error"]["code"] == "invalid_signature"
+
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert not IntegrationEvent.objects.exists()
 
 
 def test_disconnected_integration_rejects_non_uninstall_topic(make_merchant, django_capture_on_commit_callbacks):
@@ -748,3 +793,149 @@ def test_unmapped_location_ends_failed_location_unresolved(make_merchant, make_l
         event = IntegrationEvent.objects.get(integration=integration)
         assert event.status == IntegrationEvent.Status.FAILED
         assert event.error_code == "LOCATION_UNRESOLVED"
+
+
+# --- Final pre-PR audit: previously unproven DoD items ------------------------
+
+
+def test_two_webhook_ids_same_order_give_two_events_one_transaction(
+    make_merchant, make_location, django_capture_on_commit_callbacks
+):
+    """Each subscription gets its own X-Shopify-Webhook-Id (F2), so the same
+    order can arrive twice under different ids: two inbox events, but
+    UNIQUE(location_id, external_transaction_id) keeps one Transaction."""
+    owner = make_merchant("A")
+    location = make_location(owner.merchant)
+    integration = _connect_shopify(owner, location=location)
+    client = APIClient()
+    body = json.dumps(_load_fixture()).encode()
+    with _override():
+        resp1 = _post(client, integration.id, body, webhook_id="wh-a", capture=django_capture_on_commit_callbacks)
+        resp2 = _post(client, integration.id, body, webhook_id="wh-b", capture=django_capture_on_commit_callbacks)
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        events = IntegrationEvent.objects.filter(integration=integration)
+        assert sorted(e.external_event_id for e in events) == ["wh-a", "wh-b"]
+        assert all(e.status == IntegrationEvent.Status.PROCESSED for e in events)
+        assert Transaction.objects.filter(location=location).count() == 1
+
+
+def test_webhook_with_session_cookie_and_bearer_is_not_tenant_wrapped(
+    make_merchant, session_client, django_capture_on_commit_callbacks
+):
+    """A Shopify delivery that also carries a logged-in dashboard session
+    and a Bearer header is judged by its signature alone: 200 when valid,
+    401 when not, never 500 (Decision 11)."""
+    owner = make_merchant("A")
+    integration = _connect_shopify(owner)
+    client = session_client(owner.user.email)  # logged-in OWNER session cookie
+    body = json.dumps(_load_fixture()).encode()
+    bearer = {"HTTP_AUTHORIZATION": "Bearer rf_live_notarealkey000000000000000000"}
+    with _override():
+        with django_capture_on_commit_callbacks(execute=True):
+            ok = client.generic(
+                "POST",
+                _url(integration.id),
+                data=body,
+                content_type="application/json",
+                HTTP_X_SHOPIFY_HMAC_SHA256=_sign(SECRET, body),
+                HTTP_X_SHOPIFY_TOPIC="orders/paid",
+                HTTP_X_SHOPIFY_SHOP_DOMAIN=SHOP_DOMAIN,
+                HTTP_X_SHOPIFY_WEBHOOK_ID="wh-session",
+                **bearer,
+            )
+            bad = client.generic(
+                "POST",
+                _url(integration.id),
+                data=body,
+                content_type="application/json",
+                HTTP_X_SHOPIFY_HMAC_SHA256="not-a-real-signature",
+                HTTP_X_SHOPIFY_TOPIC="orders/paid",
+                HTTP_X_SHOPIFY_SHOP_DOMAIN=SHOP_DOMAIN,
+                HTTP_X_SHOPIFY_WEBHOOK_ID="wh-session-2",
+                **bearer,
+            )
+    assert ok.status_code == 200, ok.content
+    assert bad.status_code == 401
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert list(
+            IntegrationEvent.objects.filter(integration=integration).values_list("external_event_id", flat=True)
+        ) == ["wh-session"]
+
+
+def test_receiver_throttle_returns_429_before_lookup(
+    monkeypatch, make_merchant, django_assert_num_queries, django_capture_on_commit_callbacks
+):
+    """WebhookIpRateThrottle on the Shopify receiver: the (N+1)th request
+    gets 429 with Retry-After, and no database query (no lookup) runs for
+    it. Uses the existing throttle; only its configured rate is lowered."""
+    from rest_framework.settings import api_settings as drf_api_settings
+
+    from integrations.throttling import WebhookIpRateThrottle
+
+    merged = {**drf_api_settings.DEFAULT_THROTTLE_RATES, "webhook_ip": "1/min"}
+    monkeypatch.setattr(WebhookIpRateThrottle, "THROTTLE_RATES", merged)
+    cache.clear()
+
+    owner = make_merchant("A")
+    integration = _connect_shopify(owner)
+    client = APIClient()
+    body = json.dumps(_load_fixture()).encode()
+    with _override():
+        first = _post(client, integration.id, body, capture=django_capture_on_commit_callbacks)
+        with django_assert_num_queries(0):
+            second = client.generic(
+                "POST",
+                _url(integration.id),
+                data=body,
+                content_type="application/json",
+                HTTP_X_SHOPIFY_HMAC_SHA256=_sign(SECRET, body),
+                HTTP_X_SHOPIFY_TOPIC="orders/paid",
+                HTTP_X_SHOPIFY_SHOP_DOMAIN=SHOP_DOMAIN,
+                HTTP_X_SHOPIFY_WEBHOOK_ID="wh-2",
+            )
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert "Retry-After" in second
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert IntegrationEvent.objects.filter(integration=integration).count() == 1
+
+
+def test_receiver_logs_contain_no_secret_phone_or_body(make_merchant, make_location, caplog, django_capture_on_commit_callbacks):
+    """caplog over a successful delivery (with a phone), a bad-signature
+    delivery and an uninstall: no log record carries the client secret,
+    the phone, the HMAC or any part of the request body."""
+    owner = make_merchant("A")
+    location = make_location(owner.merchant)
+    integration = _connect_shopify(owner, location=location)
+    client = APIClient()
+    payload = copy.deepcopy(_load_fixture())
+    payload["phone"] = "+15005550006"
+    body = json.dumps(payload).encode()
+    uninstall_body = json.dumps(_uninstall_payload()).encode()
+
+    with caplog.at_level("DEBUG"):
+        with _override():
+            ok = _post(client, integration.id, body, capture=django_capture_on_commit_callbacks)
+            bad = _post(client, integration.id, body, secret="wrong-secret", webhook_id="wh-bad", capture=django_capture_on_commit_callbacks)
+            gone = _post(
+                client, integration.id, uninstall_body, topic="app/uninstalled", webhook_id="wh-u", capture=django_capture_on_commit_callbacks
+            )
+    assert (ok.status_code, bad.status_code, gone.status_code) == (200, 401, 200)
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    forbidden = [
+        SECRET,
+        "+15005550006",
+        _sign(SECRET, body),
+        _sign("wrong-secret", body),
+        "820982911946154508",  # the order id -- a payload value
+        "jon@example.com",  # payload email
+        '"total_price"',
+        "Test Shop",  # uninstall payload value
+    ]
+    for value in forbidden:
+        assert value not in logged, f"{value!r} leaked into logs"
+    # The bad signature was logged, with the integration id only.
+    assert any(str(integration.id) in r.getMessage() for r in caplog.records if r.name == "integrations.services")
