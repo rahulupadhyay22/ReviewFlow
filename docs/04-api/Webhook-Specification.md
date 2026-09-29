@@ -36,7 +36,7 @@ CampaignExecution create — (campaign_id, transaction_id) unique
 
 | Endpoint | Provider | Auth |
 |---|---|---|
-| `POST /webhooks/shopify` | Shopify | Shopify HMAC-SHA256 header |
+| `POST /webhooks/shopify/{integration_id}` | Shopify | `X-Shopify-Hmac-Sha256` (base64 HMAC-SHA256 over the raw body, keyed with the platform app client secret — `Authentication.md` §3), plus `X-Shopify-Shop-Domain` bound to the integration's stored `shop_domain`. Returns `200` for a valid `orders/paid` (stored) or `app/uninstalled` (disconnects, or a no-op duplicate) delivery, and for any other verified topic (not stored). `401 invalid_signature` for an unknown/malformed id, a missing/invalid HMAC, a shop-domain mismatch, a missing `X-Shopify-Webhook-Id`, an `app/uninstalled` body that fails the current-topic discriminator, or a `DISCONNECTED` integration for any topic other than a verified, bound `app/uninstalled` — see `05-integrations/Shopify.md`. |
 | `POST /webhooks/woocommerce` | WooCommerce | WooCommerce webhook secret |
 | `POST /webhooks/petpooja` | Petpooja | Petpooja's own signature scheme |
 | `POST /webhooks/gofrugal` | GoFrugal | GoFrugal's own signature scheme |

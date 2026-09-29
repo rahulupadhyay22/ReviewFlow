@@ -270,7 +270,16 @@ On every endpoint that accepts an API key: `401` with `WWW-Authenticate: Bearer`
 - Phase 06 providers:
   - `webhook` (Generic Webhook): rejects client-supplied `credentials` with `422`; requires `config_json.field_map` (§Generic-Webhook.md). The server generates a `whsec_...` signing secret and returns it **once**, as `webhook_secret` in this `201` response only — never again.
   - `csv` (CSV Import), `api` (Generic REST API): reject any `credentials` with `422`. `api` allows at most one `CONNECTED` integration per merchant; connecting a second returns `409 integration_exists`.
-  - `shopify`, `woocommerce`, `petpooja`, `gofrugal`, `zapier`, `make`: unregistered in this phase — `422`.
+  - `shopify`: **always** returns `400` in the standard `{ error: { code: "validation_error", message, field_errors: { provider: [...] } } }` shape, whatever the request body — the OAuth install/link flow below is the only way to create a Shopify `Integration` (06-shopify-app spec O2, user decision 2026-09-29). Nothing is created, and no Shopify credential from the body is ever read or stored.
+  - `woocommerce`, `petpooja`, `gofrugal`, `zapier`, `make`: unregistered in this phase — `422`.
+
+### Shopify app installation (06-shopify-app; see `../05-integrations/Shopify.md`)
+No endpoint accepts a merchant-entered shop domain (`shop` comes only from Shopify's own redirect).
+- `GET /integrations/shopify/install`: unauthenticated, pre-tenant, per-IP throttled. `shop` (query) must match `^[a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com$`, else `400 shopify_install_invalid`. Stores a single-use, 10-minute OAuth `state` in the session and returns `302` to Shopify's own `/admin/oauth/authorize`.
+- `GET /integrations/shopify/callback`: Shopify's OAuth redirect. Verifies the documented `hmac`/`state`/`shop` checks, exchanges the code, and on success stores an encrypted, single-use, 15-minute pending installation in the session, then redirects (`302`) to the configured `SHOPIFY_LINK_PAGE_URL` — with no query string or fragment appended. Creates no `Integration`. Failures: `400 shopify_install_invalid` or `502 shopify_unavailable`.
+- `GET /integrations/shopify/pending`: session, OWNER/ADMIN. `200 { shop }`, or `404` if nothing is pending or it has expired.
+- `POST /integrations/shopify/link`: session + CSRF, OWNER/ADMIN, empty body (any `shop`/`merchant_id`/`credentials` is ignored). Consumes the pending installation, resolves the shop identity, creates the `Integration` under the session's merchant, and registers the `orders/paid`/`app/uninstalled` webhook subscriptions. `201` with the Integration body, `409 shopify_install_expired` if nothing valid is pending, or `502 shopify_unavailable` if Shopify's API fails (nothing is left behind).
+- `PATCH /integrations/{id}` on a `shopify` integration always returns `422` — its `config_json` (`shop_domain`, `shop_id`, `webhook_subscription_ids`) is entirely server-managed.
 
 ### `GET /integrations`
 - Returns merchant-level integrations. Location mappings are returned separately or embedded as mapping summaries. Never includes `webhook_secret` or any other credential.

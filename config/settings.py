@@ -3,6 +3,7 @@ ReviewFlow settings. Configured entirely from environment variables;
 see .env.example and docs/10-development/Development-Setup.md.
 """
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import environ
 from django.core.exceptions import ImproperlyConfigured
@@ -165,3 +166,39 @@ R2_BUCKET = env("R2_BUCKET", default="")
 # CSV Import limits (spec 06 Decision 10).
 CSV_IMPORT_MAX_BYTES = env.int("CSV_IMPORT_MAX_BYTES", default=5 * 1024 * 1024)
 CSV_IMPORT_MAX_ROWS = env.int("CSV_IMPORT_MAX_ROWS", default=10_000)
+
+# Shopify app (spec 06-shopify-app Decision 3). Platform secrets only --
+# never stored per merchant, never in Integration.credentials_encrypted or
+# config_json (Rules for implementation). Empty defaults: a deployment that
+# never installs Shopify (or a test run) never needs these set.
+SHOPIFY_CLIENT_ID = env("SHOPIFY_CLIENT_ID", default="")
+SHOPIFY_CLIENT_SECRET = env("SHOPIFY_CLIENT_SECRET", default="")
+# Optional, set only during a client-secret rotation (Shopify.md "Client-secret
+# rotation"): verification and the OAuth callback HMAC then accept both the
+# current and the previous secret.
+SHOPIFY_CLIENT_SECRET_PREVIOUS = env("SHOPIFY_CLIENT_SECRET_PREVIOUS", default="")
+# The API version pinned in every Admin GraphQL request URL -- this is what
+# determines the payload version of ReviewFlow's shop-specific webhook
+# subscriptions (spec Decision 3 V8/F20), not any shopify.app.toml setting.
+SHOPIFY_API_VERSION = env("SHOPIFY_API_VERSION", default="")
+# Must exactly match the redirect_uri configured in the Shopify Dev
+# Dashboard for this app (F8).
+SHOPIFY_REDIRECT_URI = env("SHOPIFY_REDIRECT_URI", default="")
+# The post-OAuth ReviewFlow link-page URL on the dashboard/frontend origin
+# (spec Decision 3, "Link page URL"; [User decision 2026-09-29, spec
+# amendment]). Server-side configuration only -- never derived from a
+# Shopify request parameter or the browser.
+SHOPIFY_LINK_PAGE_URL = env("SHOPIFY_LINK_PAGE_URL", default="")
+
+# The public host for the shop-specific webhook subscription `uri`
+# (spec Decision 3 step 6: `https://<public API host>/api/v1/webhooks/shopify/{id}`).
+# Derived from SHOPIFY_REDIRECT_URI's own origin, because the callback that
+# receives that redirect_uri is served by this same API -- no separate env
+# var. Empty when SHOPIFY_REDIRECT_URI is unset (e.g. most test runs).
+if SHOPIFY_REDIRECT_URI:
+    _shopify_redirect_parts = urlsplit(SHOPIFY_REDIRECT_URI)
+    if _shopify_redirect_parts.scheme != "https":
+        raise ImproperlyConfigured("SHOPIFY_REDIRECT_URI must be https.")
+    SHOPIFY_WEBHOOK_BASE = f"https://{_shopify_redirect_parts.netloc}"
+else:
+    SHOPIFY_WEBHOOK_BASE = ""

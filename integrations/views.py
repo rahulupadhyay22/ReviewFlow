@@ -11,6 +11,10 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.conf import settings
+from django.http import HttpResponseRedirect
+from rest_framework.permissions import AllowAny
+
 from accounts.permissions import IsOwnerOrAdmin
 from apikeys.authentication import ApiKeyOptInMixin
 from apikeys.permissions import HasApiKeyScope
@@ -25,6 +29,8 @@ from integrations.serializers import (
     MappingSerializer,
     ReplaceMappingsSerializer,
 )
+from integrations.shopify import services as shopify_services
+from integrations.throttling import WebhookIpRateThrottle
 from transactions import services as transaction_services
 from transactions.serializers import TransactionFilterSerializer, TransactionSerializer
 from transactions.views import TransactionCursorPagination
@@ -36,6 +42,10 @@ class IntegrationConnectView(APIView):
     permission_classes = [IsOwnerOrAdmin]
 
     def post(self, request, provider):
+        # [User decision 2026-09-29, O2] checked before the body is even
+        # deserialized: a malformed body for provider=shopify still gets
+        # this 400, never the serializer's 422.
+        services.assert_generic_connect_allowed(provider)
         serializer = ConnectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         integration, issued_credentials = services.connect_integration(
@@ -140,6 +150,71 @@ class SalesView(ApiKeyOptInMixin, APIView):
         paginator = TransactionCursorPagination()
         page = paginator.paginate_queryset(sales, request, view=self)
         return paginator.get_paginated_response(TransactionSerializer(page, many=True).data)
+
+
+class ShopifyInstallView(APIView):
+    """GET /integrations/shopify/install: the App URL (spec 06-shopify-app
+    Decision 3, merchant flow step 1). Unauthenticated, pre-tenant, and
+    per-IP throttled -- there is no merchant, no login and no tenant data
+    on this path. No endpoint here accepts a merchant-entered shop
+    domain: `shop` comes only from Shopify's own redirect."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [WebhookIpRateThrottle]
+
+    def get(self, request):
+        shop = request.GET.get("shop", "")
+        authorize_url = shopify_services.begin_shopify_install(session=request.session, shop=shop)
+        return HttpResponseRedirect(authorize_url)
+
+
+class ShopifyCallbackView(APIView):
+    """GET /integrations/shopify/callback: Shopify's OAuth redirect (spec
+    Decision 3, merchant flow step 3). Never reads request.merchant_id or
+    any callback parameter to decide a merchant, and creates NO
+    Integration."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [WebhookIpRateThrottle]
+
+    def get(self, request):
+        shopify_services.complete_shopify_oauth(session=request.session, query=request.GET.dict())
+        # [User decision 2026-09-29, spec amendment] The exact configured
+        # link-page URL, server-side only -- no query string or fragment
+        # appended, so no Shopify parameter, code, hmac, state, token or
+        # pending-installation data ever reaches the browser-visible
+        # Location header.
+        return HttpResponseRedirect(settings.SHOPIFY_LINK_PAGE_URL)
+
+
+class ShopifyPendingView(APIView):
+    """GET /integrations/shopify/pending: session, OWNER/ADMIN (spec
+    Decision 3, merchant flow step 4)."""
+
+    permission_classes = [IsOwnerOrAdmin]
+
+    def get(self, request):
+        shop = shopify_services.pending_shopify_shop(session=request.session)
+        if shop is None:
+            return Response(status=404)
+        return Response({"shop": shop})
+
+
+class ShopifyLinkView(APIView):
+    """POST /integrations/shopify/link: session + CSRF, OWNER/ADMIN, empty
+    body (spec Decision 3, merchant flow step 4). Any shop, merchant_id or
+    credentials in the body is ignored -- the merchant always comes from
+    the authenticated session, never from the request."""
+
+    permission_classes = [IsOwnerOrAdmin]
+
+    def post(self, request):
+        integration = shopify_services.link_shopify_installation(
+            actor=request.team_member, session=request.session
+        )
+        return Response(IntegrationSerializer(integration).data, status=201)
 
 
 def _sales_response(event, txn, created):

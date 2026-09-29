@@ -25,6 +25,7 @@ from accounts.serializers import (
 )
 from apikeys.authentication import ApiKeyOptInMixin
 from apikeys.models import ApiKey
+from integrations.shopify import services as shopify_services
 
 
 class LoginRateThrottle(AnonRateThrottle):
@@ -57,7 +58,11 @@ class LoginView(APIView):
             # merchant_id). login() runs only after LoginTotpView verifies
             # a code — see accounts/middleware.py and the spec's "step-2
             # auth race" section for why.
-            request.session.flush()
+            # An anonymous session's pending Shopify install survives this
+            # flush (spec 06-shopify-app) -- see flush_session_keeping_pending.
+            shopify_services.flush_session_keeping_pending(
+                request.session, is_authenticated=request.user.is_authenticated
+            )
             request.session["pending_totp"] = services.make_pending_totp(member.user)
             return Response({"totp_required": True})
         login(request._request, member.user)  # cycles the session key

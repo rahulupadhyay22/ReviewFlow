@@ -6,7 +6,8 @@
 
 - [ ] OAuth tokens (Google, Meta) encrypted at rest via Fernet, key sourced from a KMS/secret manager — never hardcoded, never committed.
 - [ ] Integration credentials (`Integration.credentials_encrypted`) encrypted at rest.
-- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, payment gateway secret, `FERNET_KEY`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
+- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, payment gateway secret, `FERNET_KEY`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_SECRET_PREVIOUS`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
+- [ ] `SHOPIFY_CLIENT_SECRET`/`_PREVIOUS` are the ReviewFlow Shopify app's own **platform** credentials (never per-merchant) — used only to verify Shopify webhook HMACs and the OAuth callback `hmac`, and never stored in `Integration.credentials_encrypted`, `config_json`, a log or an audit row (05-integrations/Shopify.md).
 
 ## Permissions & Access
 

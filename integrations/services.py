@@ -31,6 +31,7 @@ from integrations.exceptions import (
     LocationUnresolved,
     MappingExists,
     PayloadRejected,
+    ShopifyConnectNotSupported,
     WebhookRejected,
 )
 from integrations.models import Integration, IntegrationLocationMapping
@@ -48,6 +49,19 @@ AUDIT_CONNECTED = "integration.connected"
 AUDIT_DISCONNECTED = "integration.disconnected"
 
 
+def assert_generic_connect_allowed(provider: str) -> None:
+    """The generic credentials-based connect path can never create a
+    Shopify Integration (spec 06-shopify-app O2, user decision
+    2026-09-29): the OAuth install/link flow is the only way. Raises
+    before ANY credential/config is read, validated, issued, encrypted or
+    inserted -- called first by both connect_integration() (defense in
+    depth for any other caller) and IntegrationConnectView.post() (before
+    the request body is even deserialized, so a malformed body for
+    provider=shopify still gets this 400, never the serializer's 422)."""
+    if provider == Integration.Provider.SHOPIFY:
+        raise ShopifyConnectNotSupported()
+
+
 def connect_integration(
     *,
     actor: TeamMember,
@@ -63,6 +77,7 @@ def connect_integration(
     Returns (integration, issued_credentials): issued_credentials is the
     plaintext of any server-generated credential (e.g. the Generic Webhook
     signing secret), returned to the caller exactly once, or None."""
+    assert_generic_connect_allowed(provider)
     if provider not in Integration.Provider.values or not is_registered(provider):
         raise ValidationError({"provider": ["This provider is not available."]})
 
@@ -113,11 +128,19 @@ def update_integration_config(integration: Integration, *, config_json: dict | N
     return integration
 
 
-def disconnect_integration(*, actor: TeamMember, integration: Integration) -> None:
+def disconnect_integration(
+    *, actor: TeamMember | None, integration: Integration, reason: str | None = None
+) -> None:
     """Idempotent. Locks the Integration row (FOR NO KEY UPDATE, spec
     Decision 20), disconnects it, deactivates its mappings, clears
     credentials, and cancels its pending RECEIVED/FAILED events, all in one
-    transaction."""
+    transaction.
+
+    actor=None means a SYSTEM disconnect (spec 06-shopify-app Decision 3
+    uninstall): the audit row has no actor user. reason, when given, is
+    recorded in the audit metadata alongside the provider -- e.g.
+    reason="app_uninstalled" for a verified Shopify app/uninstalled
+    delivery."""
     from events.models import IntegrationEvent  # local import: events has no reverse dependency
 
     with tenant_atomic():
@@ -138,11 +161,14 @@ def disconnect_integration(*, actor: TeamMember, integration: Integration) -> No
             status__in=[IntegrationEvent.Status.RECEIVED, IntegrationEvent.Status.FAILED],
         ).update(status=IntegrationEvent.Status.CANCELLED, updated_at=dj_timezone.now())
 
+        metadata = {"provider": integration.provider}
+        if reason is not None:
+            metadata["reason"] = reason
         record(
             AUDIT_DISCONNECTED,
-            actor=actor.user,
+            actor=actor.user if actor is not None else None,
             target=integration,
-            metadata={"provider": integration.provider},
+            metadata=metadata,
         )
 
 
@@ -302,17 +328,24 @@ def resolve_location(integration: Integration, sale: SaleCreated) -> "Location":
 
 def receive_webhook(*, provider: str, integration_id: str, request) -> None:
     """The generic provider-webhook receiver core (spec 06 Decisions 1, 11,
-    15). Must be called with NO active tenant context.
+    15; spec 06-shopify-app R2/O1 add the uninstall step). Must be called
+    with NO active tenant context.
 
-    Normative order (unchanged by any concrete provider):
-      lookup -> provider check -> verify() -> DISCONNECTED rejection ->
-      sale-topic filter -> JSON decode -> event id -> tenant_context ->
-      record_event.
+    Normative order:
+      lookup -> provider check -> verify() -> [Shopify only] uninstall
+      path (webhook-id check, JSON decode, current-topic discriminator,
+      DISCONNECTED no-op or system disconnect) -> DISCONNECTED rejection
+      (every other topic) -> sale-topic filter -> JSON decode -> event id
+      -> tenant_context -> record_event.
 
     Nothing is stored before verification, and every rejection before
     verification is the identical WebhookRejected (401) -- an unknown id, a
     malformed id, a wrong-provider id and a bad/missing signature are all
-    indistinguishable to the caller.
+    indistinguishable to the caller. The Shopify uninstall path runs
+    whatever the Integration's status: the DISCONNECTED no-op (a duplicate
+    delivery) is reached only AFTER the webhook-id check and the
+    current-topic discriminator both pass -- it can never be used to
+    bypass them.
     """
     try:
         # integration_lookup_atomic() normalizes to a uuid.UUID and stores
@@ -340,6 +373,37 @@ def receive_webhook(*, provider: str, integration_id: str, request) -> None:
         # integration id (Security-Controls.md §Logging Rules).
         logger.warning("Webhook verification failed for integration %s", integration.id)
         raise WebhookRejected()
+
+    if adapter.is_uninstall_event(request):
+        # [User decision 2026-09-29, O1] X-Shopify-Webhook-Id is required
+        # on app/uninstalled exactly as on orders/paid, checked FIRST --
+        # before the current-topic discriminator, the status read and any
+        # disconnect -- and whatever the Integration's status. This is
+        # what stops the DISCONNECTED no-op below from ever being reached
+        # without it. ShopifyAdapter.get_external_event_id() raises
+        # WebhookRejected (not PayloadValidationError) for a missing
+        # header, so it propagates as the identical 401 unmodified.
+        adapter.get_external_event_id(request, {})
+
+        try:
+            payload = json.loads(request.body)
+        except (ValueError, TypeError):
+            raise WebhookRejected() from None
+        if not isinstance(payload, dict) or not adapter.uninstall_payload_matches(payload):
+            # A malformed body, or one that fails the Phase 06
+            # current-topic discriminator, is rejected exactly like a bad
+            # signature: it is NOT a general proof of an app/uninstalled
+            # payload, and it does not authenticate X-Shopify-Topic --
+            # see ShopifyAdapter.uninstall_payload_matches. Nothing is
+            # read or changed.
+            raise WebhookRejected()
+
+        if integration.status == Integration.Status.DISCONNECTED:
+            return None  # idempotent duplicate: no state change, no audit row
+
+        with tenant_context(integration.merchant_id):
+            disconnect_integration(actor=None, integration=integration, reason="app_uninstalled")
+        return None
 
     if integration.status == Integration.Status.DISCONNECTED:
         raise WebhookRejected()

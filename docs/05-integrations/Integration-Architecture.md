@@ -12,7 +12,7 @@
 
 | Integration | V1 product scope? | Implementation phase |
 |---|---|---|
-| Shopify | Yes | **V1 implementation priority** — built first |
+| Shopify | Yes | **V1 implementation priority** — built first. See `Shopify.md` for the full app/OAuth/webhook design (06-shopify-app). |
 | Generic REST API | Yes | V1 implementation, alongside Shopify |
 | Generic Webhook | Yes | V1 implementation, alongside Shopify |
 | CSV Import | Yes | V1 implementation, alongside Shopify |
