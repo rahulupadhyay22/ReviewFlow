@@ -741,8 +741,14 @@ for V1; no replay validation is added.
 
 - No blocker remains for Shopify implementation (U1 resolved; U2, U4, U7
   resolved).
-- **U1a and U9 remain VERIFY on a development store, required before
-  `06-shopify-app` merges** (not before implementation starts).
+- **U1a and U9 are still unverified.** In the original Phase 06 plan they
+  were development-store validation gates, required before
+  `06-shopify-app` merged. Phase 06 has since merged (PR #11) without
+  them: the development-store validation was not performed, because no
+  Shopify development store or app credentials were available, and it
+  is now deferred. It must still be completed when a Shopify
+  development store and app become available. See "Deferred
+  Development-Store Validation" below.
 - **The E.164 finding above is now resolved** (2026-09-29): Decision 17
   stays unchanged; no adapter normalization is added.
 - U8 and the compliance webhooks gate **App Store submission**, not this
