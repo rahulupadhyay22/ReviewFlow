@@ -9,6 +9,7 @@ POST /integrations/shopify/link.
 """
 import hashlib
 import hmac
+import http.client
 import json
 import logging
 import re
@@ -63,7 +64,11 @@ def _shopify_post(url: str, data: bytes, headers: dict, *, timeout: int = _HTTP_
             if resp.status != 200:
                 raise ShopifyUnavailable()
             body = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    # http.client.HTTPException (e.g. IncompleteRead on a truncated response)
+    # is not an OSError. Left unconverted it would skip register_webhooks'
+    # created_ids bookkeeping, and an already-created subscription would
+    # never be cleaned up (Decision 3, step 8).
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         logger.warning("Shopify request to %s failed with %s", urlsplit(url).netloc, type(exc).__name__)
         raise ShopifyUnavailable() from None
     try:

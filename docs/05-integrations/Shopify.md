@@ -749,3 +749,32 @@ for V1; no replay validation is added.
   branch.
 - U6 (level-2 protected customer data approval) gates **production
   value**, not development.
+
+## Deferred Development-Store Validation
+
+**Status (2026-09-30): DEFERRED, not performed.** No Shopify development
+store and no Shopify app credentials are currently available, so none of
+the checks below has been run. `06-shopify-app` merged (PR #11) without
+them. They are **not** covered by the automated tests, and no observed
+Shopify value is recorded in this document yet.
+
+Still to verify on a real development store, with the real ReviewFlow
+Shopify app installed:
+
+- **U1a:** the exact query parameters Shopify sends to the App URL,
+  `/integrations/shopify/install`. (The OAuth callback's parameters are
+  already specified, F8; U1a is about the App URL only.)
+- **U9:** a real `app/uninstalled` payload passes the uninstall check
+  (`uninstall_payload_matches`), and whether the `shop` query needs an
+  extra access scope.
+- **Webhook subscriptions:** both `orders/paid` and `app/uninstalled`
+  appear after a real install.
+- **First real `orders/paid` delivery:** the `X-Shopify-Topic` value
+  (V5) and the `X-Shopify-API-Version` value against the pinned
+  `SHOPIFY_API_VERSION` (V8).
+
+When these are run, record the observed results here, with the
+verification date and the development-store context, keeping observed
+Shopify behavior separate from documented or assumed behavior. If an
+observation differs from the implementation, report the mismatch. Do not
+edit this document to hide it.
