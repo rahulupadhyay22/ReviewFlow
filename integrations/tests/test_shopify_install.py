@@ -4,9 +4,11 @@ Shopify's own HTTP endpoints are replaced by a fake
 integrations.shopify.services._shopify_post -- no network calls."""
 import base64
 import hashlib
+import http.client
 import hmac
 import json
 import threading
+import urllib.error
 from datetime import timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -305,10 +307,15 @@ def test_link_without_session_returns_403(client, fake_shopify):
     assert resp.status_code == 403
 
 
-def test_link_manager_gets_403_and_pending_remains(client, fake_shopify, make_merchant, add_member, session_client):
+@pytest.mark.parametrize("role", ["MANAGER", "VIEWER"])
+def test_link_manager_or_viewer_gets_403_and_pending_remains(
+    client, fake_shopify, make_merchant, add_member, session_client, role
+):
+    """Linking is OWNER/ADMIN only: a MANAGER and a VIEWER each get 403 on
+    both /pending and /link, and the pending installation is not consumed."""
     owner = make_merchant("A")
-    manager_email = "manager@example.com"
-    add_member(owner.merchant, "MANAGER", manager_email)
+    manager_email = f"{role.lower()}@example.com"
+    add_member(owner.merchant, role, manager_email)
     with _override():
         _install_then_callback(client)
         manager_client = session_client(manager_email)
@@ -319,8 +326,11 @@ def test_link_manager_gets_403_and_pending_remains(client, fake_shopify, make_me
         session["shopify_pending"] = client.session["shopify_pending"]
         session.save()
         pending_before = dict(manager_client.session["shopify_pending"])
+        pending_resp = manager_client.get(PENDING_URL)
         resp = manager_client.post(LINK_URL, HTTP_X_CSRFTOKEN=manager_client.csrf)
+    assert pending_resp.status_code == 403
     assert resp.status_code == 403
+    assert fake_shopify.create_calls == []  # nothing was registered with Shopify
     # Independent proof: re-load the session from the store (a fresh
     # SessionStore, not the object this test mutated) -- the pending
     # installation was NOT popped by the 403, and is still valid.
@@ -837,3 +847,136 @@ def test_install_flow_logs_contain_no_secret_token_code_or_body(client, make_mer
         assert body not in logged
     assert "webhookSubscriptionCreate" not in logged
     assert "myshopifyDomain" not in logged
+
+
+# --- Post-merge coverage: the five remaining DoD sub-points -------------------
+
+
+class _FakeHttpResponse:
+    """What urllib.request.urlopen returns: a context manager with .status
+    and .read()."""
+
+    def __init__(self, payload: dict, *, read_error: Exception | None = None):
+        self.status = 200
+        self._payload = payload
+        self._read_error = read_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        if self._read_error is not None:
+            raise self._read_error
+        return json.dumps(self._payload).encode()
+
+
+def _fake_urlopen(fake: FakeShopify, *, fail_with: Exception, fail_in_read: bool = False):
+    """A urlopen replacement under the REAL _shopify_post: answers like
+    FakeShopify, but the second webhookSubscriptionCreate (APP_UNINSTALLED)
+    fails at the transport level."""
+
+    def _urlopen(req, timeout=None):
+        assert timeout is not None  # every outbound call carries an explicit timeout
+        is_second_create = b"webhookSubscriptionCreate" in (req.data or b"") and b"APP_UNINSTALLED" in req.data
+        if is_second_create:
+            if fail_in_read:
+                return _FakeHttpResponse({}, read_error=fail_with)
+            raise fail_with
+        return _FakeHttpResponse(fake(req.full_url, req.data, dict(req.header_items())))
+
+    return _urlopen
+
+
+@pytest.mark.parametrize(
+    "fail_with, fail_in_read",
+    [
+        (urllib.error.URLError("connection refused"), False),
+        (TimeoutError("timed out"), False),
+        (ConnectionResetError("connection reset"), False),
+        (http.client.IncompleteRead(b""), True),
+    ],
+    ids=["url_error", "timeout", "connection_reset", "incomplete_read"],
+)
+def test_registration_transport_failure_leaves_nothing_behind(
+    client, make_merchant, session_client, monkeypatch, fail_with, fail_in_read
+):
+    """Decision 3, step 8, the transport-error/timeout variant: the second
+    webhookSubscriptionCreate fails below the GraphQL layer. Runs the real
+    _shopify_post (only urlopen is replaced). The result is 502, the first
+    subscription is deleted, and no Integration or audit row remains."""
+    fake = FakeShopify()
+    monkeypatch.setattr(
+        shopify_services.urllib.request, "urlopen", _fake_urlopen(fake, fail_with=fail_with, fail_in_read=fail_in_read)
+    )
+    owner = make_merchant("A")
+    with _override():
+        _install_then_callback(client)
+        resp = _link_as_owner(client, session_client(owner.user.email))
+    assert resp.status_code == 502, resp.content
+    assert resp.json()["error"]["code"] == "shopify_unavailable"
+    # The first subscription (ORDERS_PAID) was created, then cleaned up.
+    assert [topic for topic, _, _ in fake.create_calls] == ["ORDERS_PAID"]
+    assert fake.delete_calls == ["gid://shopify/WebhookSubscription/1"]
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert not Integration.objects.filter(provider="shopify").exists()
+        assert not AuditLog.objects.filter(action="integration.connected").exists()
+
+
+def test_callback_accepts_previous_client_secret_during_rotation(client, fake_shopify):
+    """The OAuth callback hmac follows the webhook rotation rule (F11): with
+    SHOPIFY_CLIENT_SECRET_PREVIOUS set, a callback signed with EITHER secret
+    verifies."""
+    new_secret = "rotated-new-client-secret"
+    with _override(), override_settings(SHOPIFY_CLIENT_SECRET=new_secret, SHOPIFY_CLIENT_SECRET_PREVIOUS=CLIENT_SECRET):
+        signed_with_old = _install_then_callback(client, secret=CLIENT_SECRET)
+        signed_with_new = _install_then_callback(type(client)(), secret=new_secret)
+    assert signed_with_old.status_code == 302
+    assert signed_with_old["Location"] == LINK_PAGE_URL
+    assert signed_with_new.status_code == 302
+
+
+def test_callback_rejects_previous_client_secret_when_unset(client, fake_shopify):
+    """Once SHOPIFY_CLIENT_SECRET_PREVIOUS is unset, a callback signed with
+    the old secret is rejected and nothing is stored."""
+    new_secret = "rotated-new-client-secret"
+    with _override(), override_settings(SHOPIFY_CLIENT_SECRET=new_secret, SHOPIFY_CLIENT_SECRET_PREVIOUS=""):
+        resp = _install_then_callback(client, secret=CLIENT_SECRET)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "shopify_install_invalid"
+    assert "shopify_pending" not in client.session
+
+
+@pytest.mark.parametrize(
+    "bad_gid",
+    ["12345", "gid://shopify/Order/12345", "gid://shopify/Shop/abc", "gid://shopify/Shop/", "", None],
+    ids=["bare_digits", "wrong_resource", "non_numeric", "empty_id", "empty_string", "null"],
+)
+def test_malformed_shop_gid_returns_400_and_stores_nothing(client, make_merchant, session_client, monkeypatch, bad_gid):
+    """Decision 3, step 5a: `shop { id }` must match
+    ^gid://shopify/Shop/(\\d+)$. Anything else is 400
+    shopify_install_invalid: no Integration, and no subscription is ever
+    requested."""
+    graphql_queries = []
+
+    def _bad_gid(url, data, headers, *, timeout=10):
+        if url.endswith("/graphql.json"):
+            query = json.loads(data)["query"]
+            graphql_queries.append(query)
+            assert "myshopifyDomain" in query, "no call may follow a malformed shop id"
+            return {"data": {"shop": {"id": bad_gid, "myshopifyDomain": SHOP}}}
+        return {"access_token": "x", "refresh_token": "y", "expires_in": 3600, "scope": "read_orders"}
+
+    monkeypatch.setattr(shopify_services, "_shopify_post", _bad_gid)
+    owner = make_merchant("A")
+    with _override():
+        _install_then_callback(client)
+        resp = _link_as_owner(client, session_client(owner.user.email))
+    assert resp.status_code == 400, resp.content
+    assert resp.json()["error"]["code"] == "shopify_install_invalid"
+    assert len(graphql_queries) == 1  # only the shop-identity query ran
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert not Integration.objects.filter(provider="shopify").exists()
+        assert not AuditLog.objects.filter(action="integration.connected").exists()

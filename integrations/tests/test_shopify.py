@@ -939,3 +939,53 @@ def test_receiver_logs_contain_no_secret_phone_or_body(make_merchant, make_locat
         assert value not in logged, f"{value!r} leaked into logs"
     # The bad signature was logged, with the integration id only.
     assert any(str(integration.id) in r.getMessage() for r in caplog.records if r.name == "integrations.services")
+
+
+# --- Post-merge coverage: duplicate deliveries enqueue nothing ----------------
+
+
+def test_duplicate_deliveries_enqueue_processing_only_once(
+    monkeypatch, make_merchant, make_location, django_capture_on_commit_callbacks
+):
+    """Duplicate Webhook Event (priority scenario), the enqueue half: the
+    same delivery posted 5 times enqueues the processing task exactly once.
+    Deliveries 2-5 never call process_integration_event.delay."""
+    from events.tasks import process_integration_event
+
+    enqueued = []
+    real_delay = process_integration_event.delay
+
+    def _recording_delay(*args, **kwargs):
+        enqueued.append(args)
+        return real_delay(*args, **kwargs)
+
+    monkeypatch.setattr(process_integration_event, "delay", _recording_delay)
+
+    owner = make_merchant("A")
+    location = make_location(owner.merchant)
+    integration = _connect_shopify(owner, location=location)
+    client = APIClient()
+    body = json.dumps(_load_fixture()).encode()
+    headers = {
+        "HTTP_X_SHOPIFY_HMAC_SHA256": _sign(SECRET, body),
+        "HTTP_X_SHOPIFY_TOPIC": "orders/paid",
+        "HTTP_X_SHOPIFY_SHOP_DOMAIN": SHOP_DOMAIN,
+        "HTTP_X_SHOPIFY_WEBHOOK_ID": "wh-dup",
+    }
+
+    enqueued_after_each_delivery = []
+    with _override():
+        for _ in range(5):
+            with django_capture_on_commit_callbacks(execute=True):
+                resp = client.generic("POST", _url(integration.id), data=body, content_type="application/json", **headers)
+            assert resp.status_code == 200
+            enqueued_after_each_delivery.append(len(enqueued))
+
+    # The first delivery enqueued the task; deliveries 2-5 enqueued nothing.
+    assert enqueued_after_each_delivery == [1, 1, 1, 1, 1]
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        event = IntegrationEvent.objects.get(integration=integration)
+        assert event.status == IntegrationEvent.Status.PROCESSED
+        assert Transaction.objects.filter(location=location).count() == 1
+    assert len(enqueued) == 1
+    assert [str(a) for a in enqueued[0]] == [str(owner.merchant_id), str(event.id)]
