@@ -455,17 +455,63 @@ def test_uninstall_concurrent_deliveries_give_one_audit_row(make_merchant, djang
 
     def _deliver():
         client = APIClient()
-        with _override():
-            resp = _post(client, integration.id, body, topic="app/uninstalled", webhook_id="wh-1", capture=django_capture_on_commit_callbacks)
+        resp = _post(client, integration.id, body, topic="app/uninstalled", webhook_id="wh-1", capture=django_capture_on_commit_callbacks)
         results.append(resp.status_code)
 
-    threads = [threading.Thread(target=_deliver) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # override_settings swaps the process-global settings object, so it is
+    # entered once, here, around both threads. Entered inside each thread, the
+    # thread that entered first restored the unset secret on exit while the
+    # other was still verifying: an intermittent 401 (see the test below).
+    with _override():
+        threads = [threading.Thread(target=_deliver) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-    assert all(code == 200 for code in results)
+    assert results == [200, 200]
+    with tenant_context(owner.merchant_id), tenant_atomic():
+        assert AuditLog.objects.filter(action="integration.disconnected", target_id=str(integration.id)).count() == 1
+
+
+def test_uninstall_concurrent_deliveries_keep_the_secret_until_both_have_verified(
+    make_merchant, django_capture_on_commit_callbacks, monkeypatch
+):
+    """Regression for the intermittent 401 in the test above, with the
+    interleaving forced: the second delivery verifies only after the first has
+    finished completely. With the override held by the main thread both
+    deliveries still see the secret; the per-thread pattern failed this
+    deterministically (second -> 401)."""
+    from integrations.shopify.adapter import ShopifyAdapter
+
+    owner = make_merchant("A")
+    integration = _connect_shopify(owner)
+    body = json.dumps(_uninstall_payload()).encode()
+    first_done = threading.Event()
+    real_verify = ShopifyAdapter.verify
+
+    def verify_second_after_first(self, request):
+        if threading.current_thread().name == "second":
+            assert first_done.wait(timeout=30), "the first delivery never finished"
+        return real_verify(self, request)
+
+    monkeypatch.setattr(ShopifyAdapter, "verify", verify_second_after_first)
+    results = {}
+
+    def _deliver(name):
+        resp = _post(APIClient(), integration.id, body, topic="app/uninstalled", webhook_id="wh-1", capture=django_capture_on_commit_callbacks)
+        results[name] = resp.status_code
+        if name == "first":
+            first_done.set()
+
+    with _override():
+        threads = [threading.Thread(target=_deliver, args=(name,), name=name) for name in ("first", "second")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+    assert results == {"first": 200, "second": 200}
     with tenant_context(owner.merchant_id), tenant_atomic():
         assert AuditLog.objects.filter(action="integration.disconnected", target_id=str(integration.id)).count() == 1
 
