@@ -10,8 +10,9 @@ Every model additionally has `id` (PK, UUID recommended for externally-exposed m
 | name | string | No | |
 | business_type | string | Yes | e.g. cafe, salon, clinic |
 | timezone | string | No | IANA tz name |
-| plan_id | FK → Plan | Yes | |
 | status | enum | No | ACTIVE, SUSPENDED, DELETED |
+
+`Merchant` has no `plan_id`. A merchant's plan is `Subscription.plan`, the single source of truth; the `plan` field of `GET /merchant` is derived from the merchant's `Subscription`.
 
 ### User
 | Field | Type | Nullable | Notes |
@@ -264,41 +265,82 @@ One row per scan. Privacy-conscious by design — **no raw IP address is ever st
 | referrer | string | Yes | optional |
 
 ### Plan
+
+Global reference data: no `merchant_id`, no RLS.
+
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | name | string | No | Starter, Growth, Pro, Business |
-| monthly_price | money | No | |
-| quota_requests | integer | No | |
+| monthly_price | money | No | display value; the amount charged is defined by the Razorpay plan. Must be `>= 0` |
+| currency | string (ISO 4217) | No | default `INR` |
+| quota_requests | integer | No | review requests per billing period |
 | features_json | json | Yes | |
+| provider_plan_id | string | Yes | the Razorpay plan id; never returned by the API |
+| is_active | bool | No | default true. `false` = retired: not offered, existing subscribers keep it |
+
+**Unique constraints**: `(name)` among active plans (`is_active = true`); `(provider_plan_id)` where it is set. A price change is a new row plus retiring the old one, because a Razorpay plan's amount is immutable. No prices or quotas are defined in the documentation; they are entered as data.
 
 ### Subscription
+
+One row per merchant, reused when the merchant resubscribes. `Subscription.plan` is the single source of truth for a merchant's plan.
+
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
-| merchant_id | FK → Merchant | No | |
-| plan_id | FK → Plan | No | |
-| status | enum | No | ACTIVE, PAST_DUE, CANCELLED, EXPIRED |
-| current_period_start / end | datetime | No | |
-| payment_provider_ref | string | Yes | |
+| merchant_id | FK → Merchant | No | unique: one row per merchant |
+| plan_id | FK → Plan | No | the plan in force (or chosen, while `INCOMPLETE`) |
+| status | enum | No | INCOMPLETE, ACTIVE, PAST_DUE, CANCELLED, EXPIRED |
+| current_period_start / end | datetime | Yes | the provider's billing-cycle instants; null only while `INCOMPLETE`: before the first activation, and again after a replacement checkout, which starts a new lifecycle (the old period stays in `UsageRecord`) |
+| payment_provider_ref | string | Yes | the Razorpay subscription id (`sub_...`); unique where set |
+| pending_plan_id | FK → Plan | Yes | a scheduled downgrade, applied at the next period |
+| past_due_at | datetime | Yes | start of the grace period; set if and only if `status = PAST_DUE` |
+| dunning_stage | integer | Yes | the last dunning checkpoint reached in the current grace episode: `0`, `3` or `6`; set if and only if `past_due_at` is set |
+| cancel_at_period_end | bool | No | default false. The merchant asked to cancel; still `ACTIVE` until the period ends |
+| provider_status | string | Yes | the Razorpay status last applied (`created`, `active`, `halted`, ...). It never grants entitlement on its own |
+| provider_synced_at | datetime | Yes | start time of the provider fetch last applied; guards against applying a stale fetch |
+
+**Constraints**: `UNIQUE(merchant_id)`; `UNIQUE(payment_provider_ref)` where set; both period fields non-null unless `status = INCOMPLETE`; `current_period_end > current_period_start`; `(status = PAST_DUE) = (past_due_at IS NOT NULL)`; `(dunning_stage IS NULL) = (past_due_at IS NULL)`; `dunning_stage IN (0, 3, 6)`.
+
+See `../08-billing/Billing-Specification.md` §N for the state machine and the paid-entitlement rule.
 
 ### UsageRecord
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
-| period_start / period_end | date | No | |
+| period_start / period_end | datetime | No | exactly the provider's billing-cycle instants, equal to the subscription's `current_period_start`/`current_period_end` for that cycle. Not dates |
 | requests_used | integer | No | atomically incremented when a `CampaignExecution` enters `SENDING` and reserves quota; `SCHEDULED`/`QUOTA_EXCEEDED` consume zero |
 
+**Unique constraint**: `(merchant_id, period_start, period_end)`. `period_end > period_start`. The quota is not stored here; it is read from `Subscription.plan.quota_requests`.
+
 ### PaymentAttempt
+
+One row is one real Razorpay payment. Nothing else is stored here: dunning checkpoints are not payments and live on `Subscription.dunning_stage`.
+
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
 | subscription_id | FK → Subscription | No | |
 | provider | enum | No | razorpay |
-| provider_attempt_id | string | No | idempotency/provider reference |
-| attempt_type | enum | No | RENEWAL, RETRY |
-| status | enum | No | INITIATED, SUCCEEDED, FAILED |
-| attempted_at | datetime | No | |
+| provider_attempt_id | string | No | the Razorpay payment id (`pay_...`), always. A check constraint rejects any other key |
+| attempt_type | enum | No | RENEWAL = a payment recorded while the subscription was not `PAST_DUE` (the first charge included). RETRY = a payment recorded while the subscription was `PAST_DUE` (a Razorpay retry or a payer-initiated recovery that succeeded) |
+| status | enum | No | INITIATED, SUCCEEDED, FAILED. V1 writes only SUCCEEDED: Razorpay delivers no payment entity for a failed subscription charge |
+| attempted_at | datetime | No | the provider's payment time |
 
-**Unique constraint**: `(provider, provider_attempt_id)`. Used to make dunning/payment retries idempotent.
+**Unique constraint**: `(provider, provider_attempt_id)`. The same payment reported twice (a re-delivered webhook, or the webhook and the paid-invoice check) is stored once.
+
+### BillingEvent
+
+The payment-webhook inbox and dedup row. It stores identifiers only, never the payload.
+
+| Field | Type | Nullable | Notes |
+|---|---|---|---|
+| merchant_id | FK → Merchant | No | resolved from the `Subscription` before the row is created; never null |
+| provider | enum | No | razorpay |
+| provider_event_id | string | No | the `x-razorpay-event-id` header |
+| event_type | string | No | e.g. `subscription.charged` |
+| provider_ref | string | No | the provider subscription id the event is about |
+| processed_at | datetime | Yes | set when a settled provider sync whose fetch started more than 5 seconds after the event was received has been applied (clock-skew margin) |
+
+**Unique constraint**: `(provider, provider_event_id)`. A duplicate delivery is a no-op.
 
 ### ApiKey
 | Field | Type | Nullable | Notes |

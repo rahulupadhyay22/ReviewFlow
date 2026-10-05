@@ -87,6 +87,25 @@ def rls_select_by_integration_id(table, column="id"):
     )
 
 
+CURRENT_BILLING_REF = "NULLIF(current_setting('app.current_billing_ref', true), '')"
+
+
+def rls_select_by_billing_ref(table, column="payment_provider_ref"):
+    """SELECT-only billing_ref_lookup policy (pre-tenant Razorpay webhook
+    Subscription lookup, see core.tenancy.billing_ref_lookup_atomic). Run
+    after rls_direct(), which enables and forces RLS. Never add a write
+    policy keyed on app.current_billing_ref. Signed off 2026-09-30
+    (spec 07 Change 1 -- LOCKED DECISION CHANGE).
+    """
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY billing_ref_lookup ON {table} FOR SELECT "
+            f"USING ({column} = {CURRENT_BILLING_REF});"
+        ),
+        reverse_sql=f"DROP POLICY billing_ref_lookup ON {table};",
+    )
+
+
 def rls_via_parent(table, fk_column, parent_table):
     """Policy for tables reaching the tenant through a parent FK.
 

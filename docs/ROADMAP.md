@@ -143,9 +143,12 @@ Source: `05-integrations/Integration-Architecture.md`,
 - `Plan`, `Subscription`, `UsageRecord`, `PaymentAttempt`
 - Tiers: Starter / Growth / Pro / Business
 - Razorpay checkout and `/billing/webhooks/razorpay`
-- Subscription states `ACTIVE`, `PAST_DUE`, `CANCELLED`, `EXPIRED`;
-  7-day `PAST_DUE` grace with dunning on days 0, 3, 6
-- `reset_usage_period`; upgrade/downgrade rules; no rollover
+- Subscription states `INCOMPLETE`, `ACTIVE`, `PAST_DUE`, `CANCELLED`,
+  `EXPIRED`; 7-day `PAST_DUE` grace with dunning on days 0, 3, 6
+- 15-minute billing maintenance sweep (`run_billing_maintenance`), with
+  `reset_usage_period` as the billing service that opens a paid
+  period's `UsageRecord` (not a monthly Beat task); upgrade/downgrade
+  rules; no rollover
 - Extend the seed command with a `Plan`/`Subscription` pair
 
 Source: `08-billing/Billing-Specification.md`,

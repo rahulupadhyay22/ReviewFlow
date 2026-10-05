@@ -18,7 +18,8 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 - Integration connected / disconnected
 - WhatsApp sender changed (own number ↔ shared pool)
 - Google connection added / reauthorized
-- Billing plan changed
+- Billing plan changed; checkout started; cancellation requested
+- Subscription state changed (activated, past due, recovered, cancelled, expired) and each dunning checkpoint reached — system events with no actor
 - API key created / revoked
 
 **Platform-side (always logged, and always via the privileged access path described in `../02-architecture/Multi-Tenancy.md`):**

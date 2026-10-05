@@ -38,10 +38,12 @@ The final documentation pass resolves the previously identified architecture inc
    - Razorpay is the V1 payment gateway.
    - `PAST_DUE` grace period is 7 calendar days.
    - Sending is disabled immediately during `PAST_DUE`.
-   - Dunning attempts are scheduled for days 0, 3, and 6.
-   - Recovery returns the subscription to `ACTIVE`.
+   - Dunning checkpoints run on days 0, 3, and 6. They are ReviewFlow recovery checkpoints (a forced reconcile with Razorpay and a recorded stage), not payment retries or reminders. Razorpay alone retries payments and notifies the payer.
+   - Recovery returns the subscription to `ACTIVE`. It requires a paid invoice for the current billing cycle; Razorpay reporting the subscription `active` is not enough.
    - Unrecovered payment by the end of day 7 → `EXPIRED`.
-   - `PaymentAttempt` makes payment/dunning operations idempotent.
+   - `PaymentAttempt` records real Razorpay payments only, idempotent on `(provider, provider_attempt_id)`. Dunning checkpoint idempotency is `Subscription.dunning_stage` plus its audit event.
+   - Subscription states are `INCOMPLETE`, `ACTIVE`, `PAST_DUE`, `CANCELLED`, `EXPIRED`. `INCOMPLETE` (checkout started, first payment not confirmed) is never entitled.
+   - *Amended 2026-09-30 (Phase 07 spec, signed-off Changes 2 and 3): the dunning, recovery, `PaymentAttempt` and state lines above. See `08-billing/Billing-Specification.md` §K and §N.*
 
 7. **Google identifiers**
    - `google_location_id` = Google Business Profile location resource identifier.

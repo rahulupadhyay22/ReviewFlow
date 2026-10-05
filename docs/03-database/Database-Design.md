@@ -8,7 +8,7 @@ PostgreSQL is the single source of truth for all business data. This document co
 
 ### Merchant
 **Purpose**: the tenant root. Every other tenant-owned row traces back to one.
-**Relationships**: 1───* Location, TeamMember, Customer, Integration, ApiKey, GoogleConnection, WhatsAppAccount, Subscription.
+**Relationships**: 1───* Location, TeamMember, Customer, Integration, ApiKey, GoogleConnection, WhatsAppAccount, UsageRecord, PaymentAttempt, BillingEvent; 1───1 Subscription. `Merchant` carries no plan column: the plan is `Subscription.plan`.
 **Delete behavior**: soft-delete only (`status = DELETED`) — never hard-cascade, to preserve billing/audit history.
 **Tenant ownership**: GLOBAL (this is the tenant itself).
 
@@ -171,23 +171,41 @@ Create/Update Transaction
 **Tenant ownership**: LOCATION.
 
 ### Plan
-**Purpose**: a billing tier definition (name, price, quota, features).
+**Purpose**: a billing tier definition (name, price, currency, quota, features, the Razorpay plan id, and whether it is still offered).
+**Unique constraints**: `(name)` among active plans; `(provider_plan_id)` where set.
+**Delete behavior**: never deleted; a plan is retired with `is_active = false`.
 **Tenant ownership**: GLOBAL.
 
 ### Subscription
-**Purpose**: a merchant's current plan and billing-period state.
-**Relationships**: Merchant 1───1 (active); Plan *───1.
+**Purpose**: a merchant's current plan and billing-period state. The single source of truth for the merchant's plan.
+**Relationships**: Merchant 1───1 (one row per merchant, reused on resubscribe); Plan *───1 (`plan`, and the optional `pending_plan`).
+**Statuses**: `INCOMPLETE, ACTIVE, PAST_DUE, CANCELLED, EXPIRED`. Only `ACTIVE` is entitled to send. See `../08-billing/Billing-Specification.md` §N.
+**Unique constraints**: `(merchant_id)`; `(payment_provider_ref)` where set.
+**Check constraints**: period fields present unless `INCOMPLETE`; `past_due_at` set if and only if `PAST_DUE`; `dunning_stage` set if and only if `past_due_at` is set, and one of `0, 3, 6`.
+**Concurrency control**: every status, plan or period change is made under a row lock on the `Subscription`; the current `UsageRecord` is locked after it, never before.
+**RLS**: `tenant_isolation`, plus the SELECT-only `billing_ref_lookup` policy used to resolve a payment webhook to its merchant (see `../02-architecture/Multi-Tenancy.md`).
+**Delete behavior**: never deleted.
 **Tenant ownership**: MERCHANT.
 
 ### UsageRecord
 **Purpose**: tracks atomically reserved request quota for a billing period.
-**Unique constraint**: `(merchant_id, period_start, period_end)`.
-**Rule**: `requests_used` increments only when a `CampaignExecution` atomically enters `SENDING`; `SCHEDULED` and `QUOTA_EXCEEDED` consume zero.
+**Unique constraint**: `(merchant_id, period_start, period_end)`. `period_start`/`period_end` are datetimes holding exactly the provider's billing-cycle instants.
+**Rule**: `requests_used` increments only when a `CampaignExecution` atomically enters `SENDING`; `SCHEDULED` and `QUOTA_EXCEEDED` consume zero. A record is created only for a period proven paid.
+**Delete behavior**: never deleted; old periods are the usage history.
 **Tenant ownership**: MERCHANT.
 
 ### PaymentAttempt
-**Purpose**: records Razorpay renewal/retry attempts so dunning is idempotent and auditable.
+**Purpose**: the payment ledger. One row is one real Razorpay payment. It is not a dunning mechanism: dunning checkpoints are recorded on `Subscription.dunning_stage`.
 **Unique constraint**: `(provider, provider_attempt_id)`.
+**Check constraint**: `provider_attempt_id` is a Razorpay payment id (`pay_...`).
+**Delete behavior**: never deleted.
+**Tenant ownership**: MERCHANT.
+
+### BillingEvent
+**Purpose**: the payment-webhook inbox. One row per Razorpay webhook event, holding identifiers only (no payload), so a duplicate delivery is a no-op and an unprocessed event can be retried by the maintenance sweep.
+**Unique constraint**: `(provider, provider_event_id)`.
+**Rule**: `merchant_id` is resolved from the `Subscription` found by the provider reference before the row is created. It is never null and never taken from the webhook payload.
+**Delete behavior**: never deleted in V1; it holds no PII.
 **Tenant ownership**: MERCHANT.
 
 ### ApiKey
@@ -206,7 +224,7 @@ Create/Update Transaction
 
 ## Design Principles Applied Throughout
 
-- Financial/audit-relevant tables (`Transaction`, `WhatsAppMessage`, `AuditLog`) use `RESTRICT` rather than `CASCADE` on delete from `Merchant`, so deleting a merchant account can't silently wipe billing-relevant history.
+- Financial/audit-relevant tables (`Transaction`, `WhatsAppMessage`, `AuditLog`, and the billing tables `Subscription`, `UsageRecord`, `PaymentAttempt`, `BillingEvent`) use `RESTRICT`/`PROTECT` rather than `CASCADE` on delete from `Merchant`, so deleting a merchant account can't silently wipe billing-relevant history.
 - Every tenant table either carries `merchant_id` directly or has a documented parent path to the merchant. RLS policies use the direct merchant_id where present and an `EXISTS`/parent relationship check for transitive tables. Application scoping remains the primary isolation layer.
 - Idempotency-critical constraints (`IntegrationEvent`, `CampaignExecution`) are enforced at the database level, not only in application code.
 - Cross-tenant assignment is prevented structurally where practical (`IntegrationEvent.merchant_id` resolved at creation, `TeamMemberLocation`'s three-way merchant-match invariant) rather than relying solely on later-stage checks.

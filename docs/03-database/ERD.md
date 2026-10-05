@@ -10,7 +10,7 @@ Merchant 1───* IntegrationEvent      (direct — merchant_id resolved at c
 Merchant 1───* ApiKey
 Merchant 1───* GoogleConnection
 Merchant 1───* WhatsAppAccount
-Merchant 1───1 Subscription ───1 Plan
+Merchant 1───1 Subscription *───1 Plan      (Subscription.plan is the merchant's plan; Merchant has no plan column)
 
 Merchant 1───* Integration
 Integration 1───* IntegrationLocationMapping *───1 Location
@@ -30,8 +30,9 @@ CampaignExecution 1───0..1 Feedback
 
 GoogleConnection 1───* GoogleLocation
 
-Merchant 1───* UsageRecord
-Merchant 1───* PaymentAttempt
+Merchant 1───* UsageRecord               (one per paid billing period)
+Merchant 1───* PaymentAttempt *───1 Subscription   (one row per real Razorpay payment)
+Merchant 1───* BillingEvent              (payment-webhook inbox; unique on (provider, provider_event_id))
 Merchant 1───* AuditLog
 ```
 
@@ -43,4 +44,5 @@ Merchant 1───* AuditLog
 - **`WhatsAppAccount` is merchant-owned, not location-owned.** A location resolves its active sender through `WhatsAppLocationMapping` — this is what lets one number serve every location, one number per location, or a mix with the shared platform account, without a schema change.
 - **`GoogleConnection` sits above `GoogleLocation`.** One OAuth connection can cover many locations; `GoogleReview` always belongs to a `GoogleLocation`, never directly to a `Location` or `GoogleConnection`.
 - **`IntegrationEvent` now attaches to `Merchant` directly and to `Integration`, not to a nullable `location_id` alone.** This closes a tenant-isolation gap where the same `external_event_id` could theoretically collide across two different merchants' integrations — see `Database-Design.md` and `../02-architecture/Multi-Tenancy.md`.
+- **Billing hangs off `Merchant` through one `Subscription` row.** `Plan` is global reference data. `UsageRecord`, `PaymentAttempt` and `BillingEvent` are merchant-owned; `BillingEvent` is resolved to its merchant through the subscription's provider reference, never through the webhook payload. See `../08-billing/Billing-Specification.md` §N.
 - **`TeamMemberLocation` is an explicit through-model, not a default M2M table.** It exists so a cross-tenant assignment (a `TeamMember` from Merchant A pointing at a `Location` owned by Merchant B) is rejected by an application-level invariant rather than only being theoretically possible and merely untested.

@@ -15,7 +15,7 @@ This document specifies how ReviewFlow's components work together technically: r
 | WhatsAppService | Adapter-based sending, status webhooks, opt-out | Meta Cloud API / shared pool |
 | GoogleSyncService | OAuth token refresh, review polling, location mapping | Google Business Profile API |
 | Analytics Aggregator | Dashboard read queries (direct aggregation in V1) | Postgres |
-| Billing Service | Subscription state, quota enforcement | Payment provider, Postgres |
+| Billing Service | Subscription state, quota enforcement | Razorpay (only through `billing/razorpay.py` — see §4), Postgres |
 | Admin (Django Admin) | Internal ops visibility | Postgres (read-mostly) |
 
 ## 3. Django App Structure
@@ -63,11 +63,17 @@ class BaseAdapter(ABC):
 
 `integrations/core/registry.py` resolves the adapter from the receiving `Integration` row (identified before the `IntegrationEvent` is created — see `Multi-Tenancy.md` §"Two Points Hardened After Architecture Review"). See `../05-integrations/Integration-Architecture.md` for full detail.
 
+### Payment-provider seam (decided 2026-09-30, Phase 07)
+
+Phase 07 V1 uses `billing/razorpay.py` as the payment-provider seam. A generic payment-provider interface/adapter abstraction is not introduced in Phase 07. If a second payment provider is added later, provider abstraction will be introduced as part of that future provider work. Phase 07 implementation must not add an unused generic payment-provider interface.
+
+The seam keeps the boundary the adapter pattern exists for: `billing/razorpay.py` is the only module that talks to Razorpay, it holds no business logic and no database access, and it is called only from `billing/services.py`. Views, serializers, tasks and admin never call it. `BaseAdapter`, `WhatsAppProvider` and `GoogleSyncProvider` remain the interfaces for sale capture, WhatsApp and Google; none of them applies to a payment gateway.
+
 ## 5. Background Processing (Celery + Redis)
 
 - **Redis roles**: Celery broker/result backend, rate-limit counters, nothing else. Redis is never the source of truth for business data.
 - **Queues**: `events`, `whatsapp`, `google_sync`, `default` — run by separate worker pools so a slow Google API call never starves WhatsApp sending.
-- **Celery Beat** (separate process from web and worker): `dispatch_due_executions` (every 1 min), `retry_failed_events` (every 5 min), `sync_google_reviews` (every 30–60 min per location, staggered), `refresh_google_tokens` (daily), `reset_usage_period` (monthly).
+- **Celery Beat** (separate process from web and worker): `dispatch_due_executions` (every 1 min), `retry_failed_events` (every 5 min), `sync_google_reviews` (every 30–60 min per location, staggered), `refresh_google_tokens` (daily), `run_billing_maintenance` (every 15 min). The billing sweep reconciles subscriptions with Razorpay, advances the day 0/3/6 dunning checkpoints and expires the grace period, enqueuing one task per merchant with an explicit `merchant_id`. There is no monthly usage reset: billing periods are per-merchant anniversaries, and `reset_usage_period` is a billing service called when a paid period begins, not a Beat task (see `../08-billing/Billing-Specification.md` §N).
 - **Scheduling model (locked)**: poll-based dispatch, not broker-side `eta` scheduling. `dispatch_due_executions` queries the indexed `CampaignExecution(scheduled_at, status)`, locks rows with `SELECT ... FOR UPDATE SKIP LOCKED`, re-checks `Transaction.status`, and sends. Cancellation (e.g. a refund) is a status flip, not a task revocation.
 
 ## 6. External Integrations

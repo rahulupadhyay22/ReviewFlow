@@ -183,6 +183,11 @@ Each native POS adapter (Shopify, WooCommerce, Petpooja, GoFrugal) has a fixture
 - Refund before `SENDING` causes `CANCELLED` with zero usage.
 - Refund after quota reservation does not reverse usage.
 - `PAST_DUE` blocks new sends; successful payment restores `ACTIVE`.
+- Provider `active` without a paid invoice for the current cycle never grants entitlement: a `PAST_DUE` subscription stays `PAST_DUE`, an `INCOMPLETE` one stays `INCOMPLETE`, a period does not advance, and no `UsageRecord` is created.
+- The same Razorpay webhook delivered five times yields one `BillingEvent`, one `PaymentAttempt` and one state transition; events delivered out of order converge to the provider's current state.
+- A billing webhook with a missing or invalid signature, or with `RAZORPAY_WEBHOOK_SECRET` unset, is rejected with `401` before any database read.
+- Dunning checkpoints on days 0, 3 and 6 advance `Subscription.dunning_stage` once each, make no charge or notification call, and create no `PaymentAttempt`.
+- `PaymentAttempt` rejects any `provider_attempt_id` that is not a Razorpay payment id.
 
 ### Multi-location integrations
 - One merchant-level Integration mapped to multiple locations resolves each incoming provider location to the correct ReviewFlow location.

@@ -72,8 +72,9 @@ class User(BaseModel, AbstractBaseUser, PermissionsMixin):
 
 
 class Merchant(BaseModel):
-    """The tenant root. Soft-delete only (status = DELETED). `plan` arrives
-    with Plan in Phase 07."""
+    """The tenant root. Soft-delete only (status = DELETED). There is no plan
+    column: the plan is `billing.Subscription.plan`, and `GET /merchant`'s
+    `plan` is derived from it (spec 07 Decision 5)."""
 
     class Status(models.TextChoices):
         ACTIVE = "ACTIVE"

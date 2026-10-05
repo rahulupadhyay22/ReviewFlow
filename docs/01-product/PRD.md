@@ -47,10 +47,12 @@ AI sentiment analysis, AI review replies/summaries, advanced CRM, loyalty/referr
 
 | Role | Can do |
 |---|---|
-| Owner | Everything, including billing and account deletion |
-| Admin | Manage locations, integrations, campaigns - not billing/deletion |
+| Owner | Everything, including billing (view and change) and account deletion |
+| Admin | Manage locations, integrations, campaigns; can view billing (plan, subscription, usage) but cannot change it; no account deletion |
 | Manager | Manage campaigns for their assigned location(s) only |
 | Viewer | Read-only dashboard access |
+
+Manager and Viewer have no billing access, read or write.
 
 ## 8. Features
 
