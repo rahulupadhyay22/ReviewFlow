@@ -58,12 +58,16 @@ class SubscriptionManager(TenantScopedManager):
     def for_lookup_ref(self, ref):
         """The only merchant-unscoped read of Subscription (spec 07 Change
         1): mirrors the billing_ref_lookup RLS policy and only works inside
-        core.tenancy.billing_ref_lookup_atomic() for this same ref."""
+        core.tenancy.billing_ref_lookup_atomic() for this same ref. Matches the
+        entitled subscription's ref or its plan-change replacement's ref
+        (spec 07-plan-change-replacement)."""
         if get_current_lookup_billing_ref() != ref:
             raise TenantContextError(
                 "for_lookup_ref() requires billing_ref_lookup_atomic() for this ref."
             )
-        return models.Manager.get_queryset(self).filter(payment_provider_ref=ref)
+        return models.Manager.get_queryset(self).filter(
+            Q(payment_provider_ref=ref) | Q(replacement_provider_ref=ref)
+        )
 
 
 class Subscription(BaseModel):
@@ -75,6 +79,10 @@ class Subscription(BaseModel):
         PAST_DUE = "PAST_DUE", "Past due"
         CANCELLED = "CANCELLED", "Cancelled"
         EXPIRED = "EXPIRED", "Expired"
+
+    class RetiredKind(models.TextChoices):
+        SWITCHED_OLD = "SWITCHED_OLD", "Old subscription after a switch"
+        ABANDONED_REPLACEMENT = "ABANDONED_REPLACEMENT", "Abandoned replacement"
 
     merchant = models.ForeignKey(
         "accounts.Merchant", on_delete=models.PROTECT, related_name="subscriptions"
@@ -92,6 +100,16 @@ class Subscription(BaseModel):
     cancel_at_period_end = models.BooleanField(default=False)
     provider_status = models.CharField(max_length=16, null=True, blank=True)
     provider_synced_at = models.DateTimeField(null=True, blank=True)
+    # Plan-change replacement (spec 07-plan-change-replacement). All NULL unless a
+    # replacement exists; nothing writes them until the later phases.
+    replacement_provider_ref = models.CharField(max_length=64, null=True, blank=True)
+    replacement_expires_at = models.DateTimeField(null=True, blank=True)
+    replacement_committed_at = models.DateTimeField(null=True, blank=True)
+    replacement_cancel_confirmed_at = models.DateTimeField(null=True, blank=True)
+    retired_provider_ref = models.CharField(max_length=64, null=True, blank=True)
+    retired_kind = models.CharField(
+        max_length=24, null=True, blank=True, choices=RetiredKind.choices
+    )
 
     objects = SubscriptionManager()
 
@@ -124,6 +142,46 @@ class Subscription(BaseModel):
             ),
             models.CheckConstraint(
                 condition=Q(dunning_stage__in=[0, 3, 6]), name="billing_subscription_dunning_stage"
+            ),
+            models.UniqueConstraint(
+                fields=["replacement_provider_ref"],
+                condition=Q(replacement_provider_ref__isnull=False),
+                name="billing_subscription_replacement_ref_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["retired_provider_ref"],
+                condition=Q(retired_provider_ref__isnull=False),
+                name="billing_subscription_retired_ref_uniq",
+            ),
+            models.CheckConstraint(
+                condition=Q(replacement_provider_ref__isnull=True)
+                | ~Q(replacement_provider_ref=F("payment_provider_ref")),
+                name="billing_subscription_replacement_ref_differs",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(replacement_provider_ref__isnull=True) & Q(replacement_expires_at__isnull=True)
+                )
+                | (
+                    Q(replacement_provider_ref__isnull=False)
+                    & Q(replacement_expires_at__isnull=False)
+                ),
+                name="billing_subscription_replacement_expiry_set",
+            ),
+            models.CheckConstraint(
+                condition=Q(replacement_committed_at__isnull=True)
+                | Q(replacement_provider_ref__isnull=False),
+                name="billing_subscription_replacement_committed_needs_ref",
+            ),
+            models.CheckConstraint(
+                condition=(Q(retired_provider_ref__isnull=True) & Q(retired_kind__isnull=True))
+                | (Q(retired_provider_ref__isnull=False) & Q(retired_kind__isnull=False)),
+                name="billing_subscription_retired_kind_set",
+            ),
+            models.CheckConstraint(
+                condition=Q(replacement_cancel_confirmed_at__isnull=True)
+                | Q(replacement_committed_at__isnull=False),
+                name="billing_subscription_replacement_confirmed_needs_committed",
             ),
         ]
 

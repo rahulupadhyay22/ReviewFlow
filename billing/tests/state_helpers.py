@@ -22,6 +22,12 @@ def read_state(merchant) -> SimpleNamespace:
             cancel_at_period_end=sub.cancel_at_period_end,
             provider_status=sub.provider_status,
             provider_synced_at=sub.provider_synced_at,
+            replacement_provider_ref=sub.replacement_provider_ref,
+            replacement_expires_at=sub.replacement_expires_at,
+            replacement_committed_at=sub.replacement_committed_at,
+            replacement_cancel_confirmed_at=sub.replacement_cancel_confirmed_at,
+            retired_provider_ref=sub.retired_provider_ref,
+            retired_kind=sub.retired_kind,
             audits=[
                 a.action
                 for a in AuditLog.objects.filter(action__startswith="billing.").order_by("created_at", "id")
