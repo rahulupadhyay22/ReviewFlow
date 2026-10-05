@@ -68,6 +68,7 @@ Base path: `/api/v1/`. All endpoints require authentication (session or API key 
 - **Auth**: session or API key
 - **Permissions**: any role (session); any active API key, no scope required
 - **Response**: `200 { id, name, business_type, timezone, plan, status }`
+- **`plan`**: derived from the merchant's `Subscription` — `{ id, name }` of `Subscription.plan` while the subscription is `ACTIVE` or `PAST_DUE`, otherwise `null`. `Merchant` has no plan column.
 - **Note**: no-scope API-key access here is the Phase-05 compatibility consumer only. It does not mean every future key-accepting endpoint is reachable without a scope: each one names its required scope (e.g. `POST /sales` → `sales:write`).
 
 ### `PATCH /merchant`
@@ -306,17 +307,94 @@ No endpoint accepts a merchant-entered shop domain (`shop` comes only from Shopi
 
 ## Billing
 
-### `GET /billing/subscription`
+Full rules: `../08-billing/Billing-Specification.md` (§N for the provider integration).
+
+**Roles.** OWNER has full billing access (reads and mutations). ADMIN has read-only billing access and can perform no billing mutation. MANAGER and VIEWER have no billing access (`403` on every billing endpoint).
+
+- *Billing read*: `GET /billing/plans`, and `GET /billing/subscription` without its `checkout` object.
+- *Billing mutation*: `POST /billing/checkout`, `POST /billing/subscription/cancel`, and opening Razorpay Checkout (which needs the `checkout` object, returned only to an OWNER).
+
+All four dashboard endpoints are session only; none accepts an API key. `merchant_id` comes from the session. Any `merchant_id`, `status`, provider id or price in a request body is ignored.
+
+### `GET /billing/plans`
+- **Auth**: session
 - **Permissions**: OWNER, ADMIN
-- **Response**: current plan, status, billing period, quota, usage, and next billing action.
+- **Response**: `200 { results: [ { id, name, monthly_price, currency, quota_requests, features } ], next_cursor }` — plans with `is_active = true`, ordered by `monthly_price`. Never includes `provider_plan_id`.
+- **Pagination**: cursor (`?cursor=`, `?limit=` max 100)
+
+### `GET /billing/subscription`
+- **Auth**: session
+- **Permissions**: OWNER, ADMIN
+- **Behavior**: reads local state only; it never calls Razorpay.
+- **Response**: `200`
+  ```
+  {
+    status: "INCOMPLETE" | "ACTIVE" | "PAST_DUE" | "CANCELLED" | "EXPIRED" | null,
+    plan: { id, name, monthly_price, currency, quota_requests, features } | null,
+    pending_plan: { ...same shape } | null,
+    current_period_start, current_period_end,
+    cancel_at_period_end: bool,
+    past_due_at, grace_ends_at, dunning_stage,
+    usage: { requests_used, quota_requests, requests_remaining } | null,
+    can_send: bool,
+    checkout: { provider: "razorpay", key_id, subscription_id, card_change: bool } | null,
+    next_action: { type, at } | null
+  }
+  ```
+- `status: null` means the merchant has no subscription.
+- `can_send` is true only for `ACTIVE`, inside the current period, with quota remaining.
+- `past_due_at`, `grace_ends_at` and `dunning_stage` (`0`, `3` or `6`) are null unless `PAST_DUE`.
+- `checkout` is returned **only to an OWNER** (always `null` for an ADMIN), and only for `INCOMPLETE` (`card_change: false`) and for `PAST_DUE` while the provider status is `pending` (`card_change: true`, passed to Razorpay Checkout as `subscription_card_change`).
+- `next_action.type`: `SUBSCRIBE` (no subscription, `CANCELLED`, `EXPIRED`); `COMPLETE_CHECKOUT` (`INCOMPLETE`); `UPDATE_PAYMENT_METHOD` (`PAST_DUE`, provider status `pending`); `RESUBSCRIBE` (`PAST_DUE`, any other provider status: the missed invoice can no longer be paid, so the OWNER cancels and checks out again); `CANCELLATION` (`cancel_at_period_end`); `PLAN_CHANGE` (`pending_plan`); otherwise `RENEWAL`.
 
 ### `POST /billing/checkout`
+- **Auth**: session + CSRF
 - **Permissions**: OWNER
-- **Behavior**: creates/updates the Razorpay subscription/payment flow; provider references are stored server-side.
+- **Rate limit**: `billing_write`, 10/min per user
+- **Request**: `{ plan_id }` — an active plan with a Razorpay plan id. Anything else is `422`.
+- **Behavior**: creates/updates the Razorpay subscription/payment flow; provider references are stored server-side. If a provider reference is already stored, the request first reconciles it with Razorpay and then routes on the resulting state (`Billing-Specification.md` §N, "Checkout reconciliation"):
+
+  | State after the reconcile | Result |
+  |---|---|
+  | no subscription, `CANCELLED`, `EXPIRED` | create a provider subscription; status `INCOMPLETE` (a replacement starts a new lifecycle — see below); `201` with `checkout` |
+  | `INCOMPLETE`, provider `created`, same plan | `200` with the existing `checkout` |
+  | `INCOMPLETE`, provider `created`, different plan | cancel the old provider subscription, then create a new one; `201` |
+  | `INCOMPLETE`, provider `authenticated` (or `active`/`pending`/`halted` not proven paid), same plan | `200` with the existing `checkout`; no provider write |
+  | `INCOMPLETE`, provider `authenticated` (or `active`/`pending`/`halted` not proven paid), different plan | `409 subscription_activating` |
+  | `INCOMPLETE`, provider `cancelled`/`expired`, or no provider reference | create a provider subscription; `201` with `checkout` |
+  | `CANCELLED`/`EXPIRED`, provider `authenticated` | `409 subscription_provider_state_unsupported`; nothing is touched |
+  | any row except `PAST_DUE`, provider `paused` or an unrecognized status | `409 subscription_provider_state_unsupported`; nothing is touched |
+  | any row except `PAST_DUE`, a known provider status whose plan maps to no ReviewFlow plan | `409 subscription_plan_unsupported`; nothing is touched |
+  | `ACTIVE`, higher-priced plan | upgrade now; `200`, `checkout: null` |
+  | `ACTIVE`, lower-priced plan | downgrade scheduled for the period end; `200`, `checkout: null` |
+  | `ACTIVE` with no provider subscription reference | `409 subscription_provider_state_unsupported`; nothing is touched |
+  | `ACTIVE` before this request, same plan | `422` |
+  | moved into `ACTIVE` by this request's own reconcile, requested plan = the plan now in force | `200`, `checkout: null`; no further provider call |
+  | `ACTIVE` with `cancel_at_period_end` | `409 subscription_cancelling` |
+  | `PAST_DUE` | `409 subscription_past_due` |
+
+- An old provider subscription that is still open on a `CANCELLED`/`EXPIRED` row (`created`, `pending`, `halted`, or `active` without a paid current period) is cancelled before a new one is created. If that cancel fails or is refused: `502 billing_provider_unavailable`, nothing changes, and no new provider subscription is created.
+- **Same plan after a reconcile.** If the subscription was already `ACTIVE` before the request, the same plan is `422`. If this request's own reconcile moved it into `ACTIVE` (the merchant had paid and the webhook had not arrived yet) and the requested plan is the plan now in force, the request is a `200` no-op with `checkout: null`; any other plan is handled by the `ACTIVE` rows above.
+- **Replacement subscription.** When a new provider subscription replaces an old one (a `CANCELLED` or `EXPIRED` subscription, or an `INCOMPLETE` one being replaced), the subscription starts a new lifecycle: `status` is `INCOMPLETE`, `plan` is the requested plan, and `pending_plan`, `current_period_start` and `current_period_end` are `null`, `cancel_at_period_end` is `false` and `usage` is `null` until the new subscription's first payment is confirmed. Earlier usage and payment history is kept and is not shown as the current period.
+- **Response**: `{ checkout: { provider: "razorpay", key_id, subscription_id } | null, subscription: <GET /billing/subscription body> }`. The Razorpay key secret and webhook secret are never returned.
+- **Errors**: `409 plan_change_unsupported` (Razorpay cannot update the subscription: UPI, eMandate, domestic card — nothing changes); `409 subscription_provider_state_unsupported` (the provider subscription is `authenticated` on a `CANCELLED`/`EXPIRED` row, `paused`, or in an unrecognized state — it is not touched and the merchant contacts support); `409 subscription_plan_unsupported` (the provider subscription's plan maps to no ReviewFlow plan — not touched, contact support); `502 billing_provider_unavailable` (a provider error or timeout, a permanent `4xx` on reading the stored subscription, or an unusable subscription id in Razorpay's create response — nothing is created, replaced, cancelled or stored, and the merchant retries later or contacts support); `503 billing_not_configured`.
+- **Idempotency**: a double submit returns the same provider subscription.
+- Entitlement is never granted by this endpoint or by the browser: the subscription becomes `ACTIVE` only after a paid invoice is confirmed with Razorpay.
+
+### `POST /billing/subscription/cancel`
+- **Auth**: session + CSRF
+- **Permissions**: OWNER
+- **Rate limit**: `billing_write`
+- **Request**: empty body
+- **Behavior**: `ACTIVE` → cancels at the end of the paid period (`cancel_at_period_end = true`; still `ACTIVE` until then). `PAST_DUE` → `CANCELLED` immediately. An `ACTIVE` subscription that is not already cancelling is first reconciled with Razorpay (the provider subscription is fetched and its state applied) before the cancellation is decided; an `ACTIVE` subscription that is already cancelling is a `200` no-op that makes no provider call. `PAST_DUE` makes no reconcile and does not depend on the provider.
+- **Response**: `200` with the `GET /billing/subscription` body. Repeating the call is a `200` no-op.
+- **Errors**: `409 subscription_not_cancellable` (no subscription, `INCOMPLETE`, `CANCELLED`, `EXPIRED`); `409 subscription_provider_state_unsupported` (an `ACTIVE` subscription whose provider subscription is `paused`, or that has no provider subscription reference: nothing is cancelled or touched, nothing changes, and the merchant contacts support); `502 billing_provider_unavailable` (only for the `ACTIVE` case: reading the provider subscription or the provider cancel failed; no cancellation happens).
 
 ### `POST /billing/webhooks/razorpay`
-- **Auth**: Razorpay webhook signature verification
-- **Behavior**: idempotently processes payment success/failure/renewal events and updates `Subscription`/`PaymentAttempt`.
+- **Full path**: `POST /api/v1/billing/webhooks/razorpay`
+- **Auth**: Razorpay webhook signature verification (`X-Razorpay-Signature`, HMAC-SHA256 over the raw body). No session, no API key, no CSRF.
+- **Behavior**: idempotently records the event (`BillingEvent`, deduplicated on `x-razorpay-event-id`) and triggers a reconcile of the `Subscription` with Razorpay; records successful payments as `PaymentAttempt`. See `Webhook-Specification.md` §"Billing Webhook (Razorpay)".
+- **Errors**: `401 invalid_signature`, `400 invalid_payload`, `429`.
 
 ## Dashboard / Analytics *(read-only endpoints; full spec created during implementation, see `../07-analytics/`)*
 

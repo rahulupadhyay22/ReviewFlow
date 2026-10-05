@@ -52,6 +52,17 @@ A provider webhook request carries no merchant; the merchant is known only after
 - The application layer mirrors it: `Integration.objects.for_lookup_id(integration_id)` is the only merchant-unscoped `Integration` read, and works only inside `integration_lookup_atomic()` for that same id.
 - After the lookup, the request's merchant context is set from `Integration.merchant_id` and the request proceeds under `tenant_isolation` as usual.
 
+#### Billing reference lookup — `billing_ref_lookup` (signed off 2026-09-30, Phase 07 spec Change 1)
+
+Razorpay sends every billing webhook to one account-level URL. The request carries no merchant, and the merchant may never be taken from the payload. The merchant is known only after the `Subscription` row is read, identified by the provider subscription id that ReviewFlow itself stored at checkout. `Subscription` therefore carries a second, **SELECT-only** policy, `billing_ref_lookup`: `payment_provider_ref = app.current_billing_ref`, alongside the standard `tenant_isolation` policy. `FORCE ROW LEVEL SECURITY` stays on.
+
+- `app.current_billing_ref` is set only by `SET LOCAL` inside `core.tenancy.billing_ref_lookup_atomic()` — transaction-local, never session-level, fail-closed when unset.
+- Unlike `integration_lookup`, the lookup runs only **after** the platform webhook signature has been verified over the raw body. An unauthenticated caller never triggers a database read.
+- There is no write policy keyed on `app.current_billing_ref`; every insert/update/delete still needs `tenant_isolation`. No `SECURITY DEFINER` function is used, and no global mapping table exists.
+- For the same reason as the other lookups (PERMISSIVE policies are ORed), `billing_ref_lookup_atomic()` refuses to run while a merchant context is active, and is always its own outermost (durable) transaction.
+- The application layer mirrors it: `Subscription.objects.for_lookup_ref(ref)` is the only merchant-unscoped `Subscription` read, and works only inside `billing_ref_lookup_atomic()` for that same ref.
+- After the lookup, the merchant context is set from `Subscription.merchant_id` and the `BillingEvent` is written under `tenant_isolation` as usual. `BillingEvent.merchant_id` is resolved before the row is created and is never null.
+
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.

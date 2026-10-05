@@ -115,7 +115,7 @@ A campaign cannot be set `is_active = True` until, checked at the service layer 
 
 ## Subscription State Gate
 
-Only `Subscription.status = ACTIVE` executions may enter `SENDING`. `PAST_DUE` immediately blocks new sends; `CANCELLED` and `EXPIRED` block sending entirely. See `../08-billing/Billing-Specification.md` for the 7-day grace period and recovery rules.
+Only `Subscription.status = ACTIVE` executions may enter `SENDING`, and only inside the subscription's current paid period. `PAST_DUE` immediately blocks new sends; `INCOMPLETE`, `CANCELLED`, `EXPIRED` and a merchant with no subscription block sending entirely. `ACTIVE` is reached, and a period begins, only with a paid invoice for the current billing cycle — the payment provider reporting the subscription active is not enough. An execution that cannot send for one of these reasons stays `SCHEDULED`; it is not `QUOTA_EXCEEDED`, which is reserved for an exhausted quota. See `../08-billing/Billing-Specification.md` §K and §N for the 7-day grace period and recovery rules.
 
 ## Feedback-First Mode (`FEEDBACK_FIRST`)
 

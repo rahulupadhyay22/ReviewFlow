@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "transactions",
     "events",
     "apikeys",
+    "billing",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -117,6 +118,8 @@ REST_FRAMEWORK = {
         # Provider webhook receivers (spec 06 Decision 15): unauthenticated,
         # so this runs before any lookup/signature check.
         "webhook_ip": env("WEBHOOK_IP_RATE", default="1200/min"),
+        # Billing mutations (spec 07 O16): checkout and cancel, per user.
+        "billing_write": env("BILLING_WRITE_RATE", default="10/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
@@ -152,8 +155,23 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 300.0,
         "options": {"queue": "events"},
     },
+    "billing-maintenance": {
+        "task": "billing.tasks.run_billing_maintenance",
+        "schedule": 900.0,
+        "options": {"queue": "default"},
+    },
 }
 CELERY_TIMEZONE = "UTC"
+
+# Razorpay (spec 07). Platform secrets only: never stored in the database,
+# logged, audited or returned. Empty defaults: with them unset checkout answers
+# 503 and the billing webhook rejects everything.
+RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
+RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
+# Razorpay has no open-ended subscription (total_count max = 100 years); 1200
+# monthly cycles. A setting only because T2 is unconfirmed.
+RAZORPAY_SUBSCRIPTION_TOTAL_COUNT = env.int("RAZORPAY_SUBSCRIPTION_TOTAL_COUNT", default=1200)
 
 # Cloudflare R2 (blobs only -- SAD.md, Security-Controls.md §File / Object
 # Storage). Read at settings load like every other platform secret; a CSV

@@ -44,7 +44,7 @@ All three share one PostgreSQL database, tied together by `merchant_id`/`locatio
             │ - normalize    │     │  - poll due       │
             │ - eligibility  │     │    executions      │
             │ - send WA msg  │     │  - retry failed WA  │
-            │ - sync Google  │     │  - quota resets      │
+            │ - sync Google  │     │  - billing sweep     │
             └───────┬───────┘     └──────────────────┘
                     │
         ┌───────────┼─────────────────────┬─────────────────┐

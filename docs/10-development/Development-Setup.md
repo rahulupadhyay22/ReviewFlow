@@ -44,9 +44,12 @@ META_APP_ID=...
 META_APP_SECRET=...
 GOOGLE_OAUTH_CLIENT_ID=...
 GOOGLE_OAUTH_CLIENT_SECRET=...
+RAZORPAY_KEY_ID=...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
 ```
 
-Payment gateway keys are added once the provider is confirmed (see the blueprint's "Remaining Decisions").
+The payment gateway is Razorpay. The three `RAZORPAY_*` values are read by the billing app (Phase 07); use Razorpay **test-mode** keys locally. `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` are secrets; `RAZORPAY_KEY_ID` is the public key id. They default to empty: with them unset, selecting an offered plan at checkout returns `503 billing_not_configured` and the billing webhook rejects every request, while the rest of the API is unaffected. A plan that is not offered (unknown, retired, or without a `provider_plan_id`) is rejected first, with `422 validation_error`, whether or not the credentials are set. `RAZORPAY_SUBSCRIPTION_TOTAL_COUNT` is optional (default `1200`, the number of monthly cycles in Razorpay's 100-year maximum). The webhook URL registered in Razorpay is `POST /api/v1/billing/webhooks/razorpay`, subscribed to the `subscription.*` events.
 
 ## Running the App Locally
 
@@ -82,14 +85,32 @@ merchant + location to exist. It goes through the ordinary service functions
 - **`DEBUG`-only**: refuses to run (raises `CommandError`, writes nothing)
   unless `settings.DEBUG` is true.
 - **Idempotent**: if the seed owner (`owner@seed.reviewflow.local`) already
-  exists, it prints "already seeded" and exits without creating anything new.
+  exists, it prints "already seeded" and does not recreate the merchant,
+  locations or users. The billing fixtures below are a separate step with
+  their own check, so a database seeded before Phase 07 gains them on the
+  next run (it then also prints that they were added), and a further run
+  changes nothing.
 - **Password**: `--password` if given, else a random one generated with
   `secrets.token_urlsafe`. Printed once to stdout, never hardcoded or logged
   elsewhere.
 
-The `SHARED_POOL` `WhatsAppAccount` fixture (Phase 08) and the
-`Plan`/`Subscription` pair (Phase 07) are not created by this command yet —
-those later phases extend it.
+**Billing fixtures (Phase 07).** The command also creates four `Plan` rows
+(`Starter` 100, `Growth` 500, `Pro` 2000, `Business` 10000 requests per
+period, each with `monthly_price = 0` and no `provider_plan_id`) and, for
+the seed merchant, an `ACTIVE` `Subscription` on `Growth` with a one-year
+period and its `UsageRecord`. **These are development fixtures only. They
+are not pricing and not quota decisions**, and nothing in them may be
+copied into production data: production plans are Razorpay plans entered
+in Django Admin with their `provider_plan_id`. The seed is the only code
+that creates an `ACTIVE` subscription without a paid invoice, because it
+has no provider; the row has no provider reference, so cancel on it
+answers `409 subscription_provider_state_unsupported`, checkout of one of
+the seed plans answers `422 validation_error` (they have no
+`provider_plan_id`, so they are not offered), and `GET /merchant` shows
+`plan: { id, name }` for it.
+
+The `SHARED_POOL` `WhatsAppAccount` fixture (Phase 08) is not created by
+this command yet — that phase extends it.
 
 ## Testing Locally
 

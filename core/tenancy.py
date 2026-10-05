@@ -175,6 +175,56 @@ def integration_lookup_atomic(integration_id: uuid.UUID | str) -> Iterator[uuid.
         _current_lookup_integration_id.reset(token)
 
 
+_current_lookup_billing_ref = ContextVar("current_lookup_billing_ref", default=None)
+
+_BILLING_REF = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+def get_current_lookup_billing_ref() -> str | None:
+    return _current_lookup_billing_ref.get()
+
+
+def is_valid_billing_ref(ref) -> bool:
+    """The one check for a provider subscription reference: a string matching
+    ^[A-Za-z0-9_]{1,64}$ in full (fullmatch: a trailing newline is refused).
+    Shared by billing_ref_lookup_atomic and by billing code that must validate
+    a ref before it is stored or looked up."""
+    return isinstance(ref, str) and _BILLING_REF.fullmatch(ref) is not None
+
+
+@contextmanager
+def billing_ref_lookup_atomic(ref: str) -> Iterator[str]:
+    """Pre-tenant billing lookup only (spec 07 Change 1 -- LOCKED DECISION
+    CHANGE, signed off): one transaction with
+    SET LOCAL app.current_billing_ref, read by the SELECT-only
+    billing_ref_lookup policy on billing_subscription.
+
+    Refuses to run inside a merchant context: the tenant_isolation and
+    billing_ref_lookup policies are PERMISSIVE, so PostgreSQL ORs them, and
+    nesting (a savepoint) would expose the subscription row (and,
+    transitively, its merchant) to an unrelated merchant's transaction.
+
+    It must also be its own outermost transaction: durable=True makes Django
+    raise RuntimeError if it is opened inside any other atomic block (Django's
+    own test-case transactions excepted), so the SET LOCAL can never outlive
+    this block. Mirrors integration_lookup_atomic().
+    """
+    if _current_merchant_id.get() is not None:
+        raise TenantContextError("billing_ref_lookup_atomic() must not run inside a tenant context.")
+    if not is_valid_billing_ref(ref):
+        raise ValueError("ref must match ^[A-Za-z0-9_]{1,64}$.")
+    token = _current_lookup_billing_ref.set(ref)
+    try:
+        with transaction.atomic(durable=True):
+            with connection.cursor() as cursor:
+                # Transaction-local; the ref is validated above, so the
+                # literal is injection-safe.
+                cursor.execute(f"SET LOCAL app.current_billing_ref = '{ref}'")
+            yield ref
+    finally:
+        _current_lookup_billing_ref.reset(token)
+
+
 def tenant_task(fn):
     """Celery entry point: the task's first argument is always merchant_id.
 

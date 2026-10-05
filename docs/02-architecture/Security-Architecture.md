@@ -29,6 +29,12 @@ Webhook -> signature verification -> integration identified from URL/payload -> 
 
 Fails closed: missing or invalid signature is always rejected, never "processed anyway."
 
+The Razorpay billing webhook follows the same rule with a different resolution path: the platform signature is verified over the raw body before any database read, and the merchant is then found through the provider subscription reference that ReviewFlow stored at checkout, never from the payload.
+
+```
+Billing webhook -> signature verification -> Subscription found by stored provider ref -> BillingEvent
+```
+
 ### Outbound Webhooks (future)
 HMAC-SHA256 signed with a per-`WebhookEndpoint` secret, timestamped to prevent replay, retried with backoff on non-2xx.
 
@@ -40,11 +46,13 @@ Standard OAuth 2.0 authorization-code flow. Tokens encrypted at rest (Fernet, ke
 Role-based, enforced via DRF permission classes composed per-view (never scattered ad hoc in view code):
 
 ```
-OWNER   — billing, delete merchant, manage all locations, manage team
-ADMIN   — manage locations, integrations, campaigns; no billing/delete
-MANAGER — campaigns for assigned locations only
-VIEWER  — read-only dashboard access
+OWNER   — billing (read and mutate), delete merchant, manage all locations, manage team
+ADMIN   — manage locations, integrations, campaigns; billing read only; no billing mutation, no delete
+MANAGER — campaigns for assigned locations only; no billing access
+VIEWER  — read-only dashboard access; no billing access
 ```
+
+Billing read is viewing the plans, the subscription and usage. Billing mutation is checkout, plan change, cancellation and changing the payment method. See `../04-api/API-Specification.md` §Billing.
 
 `MANAGER` location assignment is stored via the explicit `TeamMemberLocation` through-model (not a default M2M), which carries its own `merchant_id` and is rejected at creation if it would cross tenant boundaries — see `Multi-Tenancy.md`.
 
@@ -65,4 +73,4 @@ Summarized here; full detail in `Multi-Tenancy.md`. Two independent layers: `Ten
 ## Encryption & Secrets
 
 - OAuth tokens and provider credentials encrypted at rest (Fernet/KMS-backed).
-- Environment-specific secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, payment gateway secret, `FERNET_KEY`) live in the hosting provider's secret manager, never committed, read once at settings load.
+- Environment-specific secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `FERNET_KEY`) live in the hosting provider's secret manager, never committed, read once at settings load.

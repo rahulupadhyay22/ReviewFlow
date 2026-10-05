@@ -9,14 +9,19 @@ class LoginSerializer(serializers.Serializer):
 
 
 class MerchantSerializer(serializers.ModelSerializer):
-    plan = serializers.SerializerMethodField()  # Plan arrives in Phase 07
+    plan = serializers.SerializerMethodField()  # derived from Subscription.plan (spec 07)
 
     class Meta:
         model = Merchant
         fields = ["id", "name", "business_type", "timezone", "plan", "status"]
 
     def get_plan(self, merchant):
-        return None
+        # Derived, never stored on Merchant (spec 07 Decision 5). Local import:
+        # billing.services imports accounts.models. Raises TenantContextError
+        # unless `merchant` is the active tenant.
+        from billing import services as billing_services
+
+        return billing_services.get_merchant_plan_summary(merchant.id)
 
 
 class MerchantUpdateSerializer(serializers.Serializer):

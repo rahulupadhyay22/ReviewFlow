@@ -6,14 +6,17 @@
 
 - [ ] OAuth tokens (Google, Meta) encrypted at rest via Fernet, key sourced from a KMS/secret manager — never hardcoded, never committed.
 - [ ] Integration credentials (`Integration.credentials_encrypted`) encrypted at rest.
-- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, payment gateway secret, `FERNET_KEY`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_SECRET_PREVIOUS`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
+- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `FERNET_KEY`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_SECRET_PREVIOUS`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
 - [ ] `SHOPIFY_CLIENT_SECRET`/`_PREVIOUS` are the ReviewFlow Shopify app's own **platform** credentials (never per-merchant) — used only to verify Shopify webhook HMACs and the OAuth callback `hmac`, and never stored in `Integration.credentials_encrypted`, `config_json`, a log or an audit row (05-integrations/Shopify.md).
+
+- [ ] `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` are **platform** credentials (never per-merchant) — read from the environment only, and never stored in the database, a log, an audit row or an API response. `RAZORPAY_KEY_ID` is the public key id and is the only Razorpay value returned to the dashboard (to an OWNER, for Checkout). No card, UPI or payer contact data is stored by ReviewFlow.
 
 ## Permissions & Access
 
 - [ ] Every view enforces role-based permissions via a DRF permission class — never an inline `if` check scattered in view logic.
 - [ ] No endpoint trusts a client-supplied `merchant_id`/`location_id` — always derived from the authenticated principal.
 - [ ] API keys are scoped (per-merchant, per-permission) and individually revocable.
+- [ ] Billing endpoints are session only: OWNER may read and mutate billing, ADMIN may only read it, MANAGER and VIEWER have no billing access, and no API key can reach a billing endpoint.
 - [ ] No standing database role with `BYPASSRLS` or superuser privileges in normal application configuration — cross-tenant admin access goes through an explicit, audited privileged service path only.
 
 ## Rate Limiting & Abuse Prevention
@@ -25,6 +28,7 @@
 ## Webhook Security
 
 - [ ] Every inbound webhook endpoint verifies signature/secret and fails closed (rejects on missing/invalid signature — never "process anyway").
+- [ ] The Razorpay billing webhook verifies `X-Razorpay-Signature` (HMAC-SHA256 over the raw body) before any database read, rejects every request when `RAZORPAY_WEBHOOK_SECRET` is unset, and takes the merchant only from the stored provider subscription reference, never from the payload.
 - [ ] A spike in invalid-signature attempts on any endpoint triggers an internal alert.
 - [ ] Outbound webhooks (future) are HMAC-signed and timestamped to prevent replay.
 
