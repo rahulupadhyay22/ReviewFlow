@@ -174,6 +174,7 @@ class FakeProvider:
         self.update_error = None
         self.update_extra = {}  # merged into the entity an update returns (e.g. a new period)
         self.cancel_error = None
+        self.created_kwargs = []  # the start_at/expire_by each create was given
         self._created = 0
 
     # -- helpers for tests
@@ -200,8 +201,10 @@ class FakeProvider:
             raise self.invoices_error
         return self.invoices
 
-    def create_subscription(self, provider_plan_id):
+    def create_subscription(self, provider_plan_id, *, start_at=None, expire_by=None):
+        # The call tuple keeps its old shape; the new arguments are recorded apart.
         self.calls.append(("create_subscription", provider_plan_id))
+        self.created_kwargs.append({"start_at": start_at, "expire_by": expire_by})
         if self.create_error:
             raise self.create_error
         if self.create_entity is not None:

@@ -82,6 +82,51 @@ def provider_may_be_cancelled(provider_status: str | None) -> bool:
     return provider_status in CANCELLABLE_PROVIDER_STATUSES
 
 
+# --- plan-change replacement configuration and classifier (spec 07-plan-change-replacement) ---
+
+REPLACEMENT_KINDS = ("UPGRADE", "DOWNGRADE")
+# The flags default False and the windows (seconds) have no default: Razorpay's
+# limits are unverified (G-3), so none is assumed.
+_REPLACEMENT_FLAGS = {
+    "UPGRADE": "BILLING_REPLACEMENT_UPGRADE_ENABLED",
+    "DOWNGRADE": "BILLING_REPLACEMENT_DOWNGRADE_ENABLED",
+}
+_REPLACEMENT_WINDOWS = {
+    "UPGRADE": "BILLING_REPLACEMENT_UPGRADE_AUTH_WINDOW",
+    "DOWNGRADE": "BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN",
+}
+
+
+def replacement_enabled(kind: str) -> bool:
+    """Whether new replacements of this kind may be created (default off)."""
+    return getattr(settings, _REPLACEMENT_FLAGS[kind], False) is True
+
+
+def replacement_window(kind: str) -> timedelta:
+    """The configured authorization window (upgrade) or expire margin
+    (downgrade). An unset, non-integer or non-positive setting is
+    BillingNotConfigured (503): no default is assumed."""
+    value = getattr(settings, _REPLACEMENT_WINDOWS[kind], None)
+    if type(value) is not int or value <= 0:
+        raise BillingNotConfigured()
+    return timedelta(seconds=value)
+
+
+def is_update_unsupported_refusal(error) -> bool:
+    """G-0: whether a refused plan update means "this subscription cannot be
+    updated" (so a replacement may be tried). It matches the refusal's exact
+    (status, provider_code, reason) against razorpay.UPDATE_UNSUPPORTED_REFUSALS,
+    which ships empty, so nothing classifies until evidence is recorded.
+    Anything it does not recognise is False and the caller keeps today's
+    409 plan_change_unsupported."""
+    if not isinstance(error, BillingProviderRejected):
+        return False
+    status, code, reason = error.status, error.provider_code, error.reason
+    if type(status) is not int or not isinstance(code, str) or not isinstance(reason, str):
+        return False
+    return (status, code, reason) in razorpay.UPDATE_UNSUPPORTED_REFUSALS
+
+
 AUDIT_CHECKOUT_STARTED = "billing.checkout_started"
 AUDIT_PLAN_CHANGED = "billing.plan_changed"
 AUDIT_CANCELLATION_REQUESTED = "billing.cancellation_requested"

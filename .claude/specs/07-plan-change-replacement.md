@@ -324,9 +324,10 @@ Names are indicative; signatures follow `billing/services.py` conventions
   `eta`, `countdown` or retry configuration.
 - **Settings:** `BILLING_REPLACEMENT_UPGRADE_ENABLED` (default `False`),
   `BILLING_REPLACEMENT_DOWNGRADE_ENABLED` (default `False`),
-  `BILLING_REPLACEMENT_UPGRADE_AUTH_WINDOW` (required when the upgrade flag is
-  on, **no default**), `BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN` (required
-  when the downgrade flag is on, **no default**). A required setting that is
+  `BILLING_REPLACEMENT_UPGRADE_AUTH_WINDOW` (a duration in **seconds**; required
+  when the upgrade flag is on, **no default**),
+  `BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN` (a duration in **seconds**;
+  required when the downgrade flag is on, **no default**). A required setting that is
   unset gives `503 billing_not_configured` for that kind. Turning a flag off
   only stops new replacements of that kind; pending ones continue to be
   processed, switched or abandoned.
@@ -854,6 +855,8 @@ applies:
 - P8: the migration reversal wording (new-column data is discarded).
 - The downgrade commit is described as T1 DB transaction, provider cancel call outside
   any transaction and without the row lock, T2 DB transaction (row 18).
+- The two window settings are durations in seconds (approved 2026-10-05, at the W2
+  review; the spec had named no unit). The setting names are unchanged.
 - D1 stays fully out of scope: `fetch_invoices()` stays fail-closed and no provider
   behavior is inferred.
 

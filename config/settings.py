@@ -173,6 +173,17 @@ RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 # monthly cycles. A setting only because T2 is unconfirmed.
 RAZORPAY_SUBSCRIPTION_TOTAL_COUNT = env.int("RAZORPAY_SUBSCRIPTION_TOTAL_COUNT", default=1200)
 
+# Plan-change replacement (spec 07-plan-change-replacement). Both flags default OFF.
+# The two windows are in SECONDS and have NO default: Razorpay's limits are
+# unverified (gate G-3), so none is assumed. A flag turned on without its window
+# set makes that kind answer 503 billing_not_configured.
+BILLING_REPLACEMENT_UPGRADE_ENABLED = env.bool("BILLING_REPLACEMENT_UPGRADE_ENABLED", default=False)
+BILLING_REPLACEMENT_DOWNGRADE_ENABLED = env.bool("BILLING_REPLACEMENT_DOWNGRADE_ENABLED", default=False)
+BILLING_REPLACEMENT_UPGRADE_AUTH_WINDOW = env.int("BILLING_REPLACEMENT_UPGRADE_AUTH_WINDOW", default=None)
+BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN = env.int(
+    "BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN", default=None
+)
+
 # Cloudflare R2 (blobs only -- SAD.md, Security-Controls.md §File / Object
 # Storage). Read at settings load like every other platform secret; a CSV
 # upload/import that never runs (e.g. most test runs) never touches these.
