@@ -175,6 +175,12 @@ class FakeProvider:
         self.update_extra = {}  # merged into the entity an update returns (e.g. a new period)
         self.cancel_error = None
         self.created_kwargs = []  # the start_at/expire_by each create was given
+        # Per-ref maps (spec 07-plan-change-replacement). They win over the global
+        # switches above for that ref; the global ones keep working unchanged.
+        self.fetch_errors = {}  # ref -> exception raised by fetch_subscription
+        self.invoices_errors = {}  # ref -> exception raised by fetch_invoices
+        self.invoices_by_ref = {}  # ref -> the invoice list for that ref
+        self.cancel_errors = {}  # ref -> exception raised by cancel_subscription
         self._created = 0
 
     # -- helpers for tests
@@ -191,15 +197,17 @@ class FakeProvider:
     # -- the razorpay surface
     def fetch_subscription(self, ref):
         self.calls.append(("fetch_subscription", ref))
-        if self.fetch_error:
-            raise self.fetch_error
+        error = self.fetch_errors.get(ref) or self.fetch_error
+        if error:
+            raise error
         return self.entities[ref]
 
     def fetch_invoices(self, ref):
         self.calls.append(("fetch_invoices", ref))
-        if self.invoices_error:
-            raise self.invoices_error
-        return self.invoices
+        error = self.invoices_errors.get(ref) or self.invoices_error
+        if error:
+            raise error
+        return self.invoices_by_ref.get(ref, self.invoices)
 
     def create_subscription(self, provider_plan_id, *, start_at=None, expire_by=None):
         # The call tuple keeps its old shape; the new arguments are recorded apart.
@@ -226,8 +234,9 @@ class FakeProvider:
 
     def cancel_subscription(self, ref, at_cycle_end):
         self.calls.append(("cancel_subscription", ref, at_cycle_end))
-        if self.cancel_error:
-            raise self.cancel_error
+        error = self.cancel_errors.get(ref) or self.cancel_error
+        if error:
+            raise error
         if ref in self.entities and not at_cycle_end:
             self.entities[ref] = {**self.entities[ref], "status": "cancelled"}
         return self.entities.get(ref, {"id": ref, "status": "cancelled"})

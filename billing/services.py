@@ -517,7 +517,12 @@ def _apply_snapshot(
         elif provider_status in ("pending", "halted"):
             changed = _apply_payment_failed(sub, now, fields)
         elif provider_status in TERMINAL_PROVIDER_STATUSES:
-            changed = _apply_terminal(sub, now, fields)
+            if not _committed_downgrade_replacement(sub):
+                changed = _apply_terminal(sub, now, fields)
+            # else (spec 07-plan-change-replacement, rule 5): the commit scheduled
+            # the old subscription to end at its cycle end on purpose, so its
+            # terminal status does not move the row while the committed replacement
+            # stands. Only provider_status and provider_synced_at are recorded, below.
         elif provider_status not in ("created", "authenticated"):
             # paused or unknown: no change, logged.
             logger.warning("Billing snapshot for merchant %s has status %r", merchant_id, provider_status[:16])
@@ -546,8 +551,12 @@ def _apply_active(
     plan: Plan,
     fields: set[str],
     actor: TeamMember | None,
+    effective: str | None = None,
 ) -> tuple[bool, bool, bool]:
-    """Provider `active`. Returns (changed, settled, advanced)."""
+    """Provider `active`. Returns (changed, settled, advanced). `effective`
+    (spec 07-plan-change-replacement) names the plan-change audit row's effect
+    (REPLACEMENT_IMMEDIATE or REPLACEMENT_SCHEDULED); None keeps the merged
+    behavior."""
     Status = Subscription.Status
     current_start = _from_unix(entity.get("current_start"))
     current_end = _from_unix(entity.get("current_end"))
@@ -571,7 +580,7 @@ def _apply_active(
         if old_plan.pk != plan.pk:
             _take_plan(sub, plan, old_pending, fields)
             changed = True
-            _audit_plan_change(sub, actor, old_plan, plan, old_pending)
+            _audit_plan_change(sub, actor, old_plan, plan, old_pending, effective)
         elif old_pending is not None and old_pending == plan.pk:
             sub.pending_plan = None
             fields.add("pending_plan")
@@ -607,8 +616,11 @@ def _apply_active(
             plan_id=str(plan.pk),
             plan_name=plan.name,
         )
+        if effective is not None and was_past_due and old_plan.pk != plan.pk:
+            # A replacement switch on a PAST_DUE row: recovered AND plan_changed.
+            _audit_plan_change(sub, actor, old_plan, plan, old_pending, effective)
     elif old_plan.pk != plan.pk:
-        _audit_plan_change(sub, actor, old_plan, plan, old_pending)
+        _audit_plan_change(sub, actor, old_plan, plan, old_pending, effective)
     _record_payment(sub, paid, was_past_due)
     return True, True, True
 
@@ -632,6 +644,20 @@ def _apply_payment_failed(sub: Subscription, now: datetime, fields: set[str]) ->
         plan_id=str(sub.plan_id),
     )
     return True
+
+
+def _committed_downgrade_replacement(sub: Subscription) -> bool:
+    """Rule 5 (spec 07-plan-change-replacement): an ACTIVE row with a replacement
+    ref AND replacement_committed_at set. The commit marker is the exact
+    discriminator of a committed downgrade replacement: only the downgrade commit
+    step sets it (an upgrade has no commit point). pending_plan is NOT used: a
+    provider-update downgrade sets it too. If the replacement fails its columns
+    are cleared, so this is False again and the old terminal status applies."""
+    return (
+        sub.status == Subscription.Status.ACTIVE
+        and sub.replacement_provider_ref is not None
+        and sub.replacement_committed_at is not None
+    )
 
 
 def _apply_terminal(sub: Subscription, now: datetime, fields: set[str]) -> bool:
@@ -690,13 +716,15 @@ def _audit_plan_change(
     old_plan: Plan,
     plan: Plan,
     old_pending: uuid.UUID | None,
+    effective: str | None = None,
 ) -> None:
-    # `effective` uses the pending plan as it was before _take_plan cleared it.
+    # Unless given, `effective` uses the pending plan as it was before
+    # _take_plan cleared it.
     _audit(
         AUDIT_PLAN_CHANGED,
         sub,
         actor,
-        effective="APPLIED" if old_pending == plan.pk else "IMMEDIATE",
+        effective=effective or ("APPLIED" if old_pending == plan.pk else "IMMEDIATE"),
         from_plan=old_plan.name,
         to_plan=plan.name,
         plan_id=str(plan.pk),
@@ -749,9 +777,18 @@ def sync_subscription() -> None:
             # began are marked (strictly: an event exactly on the cutoff is
             # not). One timestamp for both columns.
             stamp = dj_timezone.now()
-            BillingEvent.objects.filter(
+            events = BillingEvent.objects.filter(
                 processed_at__isnull=True, created_at__lt=fetch_started_at - EVENT_CLOCK_SKEW
-            ).update(processed_at=stamp, updated_at=stamp)
+            )
+            # Only the main subscription was fetched here. An event naming a live
+            # replacement ref was not observed, so it stays unprocessed for the
+            # step that fetches that ref (spec 07-plan-change-replacement).
+            replacement_ref = Subscription.objects.values_list(
+                "replacement_provider_ref", flat=True
+            ).first()
+            if replacement_ref:
+                events = events.exclude(provider_ref=replacement_ref)
+            events.update(processed_at=stamp, updated_at=stamp)
 
 
 def sync_pending_events() -> None:
@@ -874,6 +911,10 @@ def maintenance_due(now: datetime | None = None) -> bool:
                 # sync (decided 2026-10-01), so it is not swept every tick.
                 | Q(status=S.ACTIVE, current_period_end__lte=now, payment_provider_ref__isnull=False)
                 | Q(status=S.PAST_DUE)
+                # A row with a plan-change replacement or a retired subscription
+                # always has provider work to do (spec 07-plan-change-replacement).
+                | Q(replacement_provider_ref__isnull=False)
+                | Q(retired_provider_ref__isnull=False)
                 | (
                     Q(status__in=[S.CANCELLED, S.EXPIRED], payment_provider_ref__isnull=False)
                     & (

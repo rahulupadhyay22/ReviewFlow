@@ -143,7 +143,7 @@ decision is amended silently.
 | 2 | "Two live provider subscriptions never exist for one merchant" | At most two: the entitled one plus one replacement, or one awaiting confirmed termination | approved |
 | 3 | `billing_ref_lookup` matches `payment_provider_ref` only | Matches `payment_provider_ref` OR `replacement_provider_ref`; still SELECT-only | approved; formal sign-off at PR time |
 | 4 | "authenticated, and active with a paid current period, are never cancelled by a checkout"; the shared "which provider states may be touched" rule | Unchanged for checkout reconcile. Separate, kind-aware rules govern the replacement and the retired subscription ("Cancellation and retirement"): an abandoned replacement is cancelled when the provider reports `created` or `authenticated` and never when `active`; the old subscription after a switch is cancelled even when `active`. The existing predicate is not widened. | approved |
-| 5 | A provider `cancelled` moves the row to `CANCELLED` (§N mapping) | While a downgrade replacement is live, the old ref's `cancelled` does not move the row. If the replacement fails, the old `cancelled` applies as today. | approved |
+| 5 | A provider `cancelled` moves the row to `CANCELLED` (§N mapping) | While a downgrade replacement is committed, the old ref's `cancelled` does not move the row. The guard applies to an `ACTIVE` row with `replacement_provider_ref` set **and** `replacement_committed_at` set. `replacement_committed_at` is the discriminator of a committed downgrade replacement because only the downgrade commit step sets it (an upgrade replacement has no commit point); `pending_plan` is not the discriminator. An uncommitted replacement does not defer it. If the replacement fails, the old `cancelled` applies as today. | approved (W3 review, 2026-10-05) |
 | 6 | Cancel endpoint order of checks | New first step: a pending replacement is handled before the merchant's own cancel; a committed downgrade replacement is cancelled too | approved (P1) |
 | 7 | `maintenance_due()` categories (W7) | Rows with a replacement or retired ref are due | approved |
 | 8 | `pending_plan` is a downgrade scheduled at the next provider charge | Also set by a downgrade replacement; applied at the switch | approved |
@@ -857,6 +857,12 @@ applies:
   any transaction and without the row lock, T2 DB transaction (row 18).
 - The two window settings are durations in seconds (approved 2026-10-05, at the W2
   review; the spec had named no unit). The setting names are unchanged.
+- Rule 5 (row 5) is defined precisely (approved 2026-10-05, at the W3 review): the
+  terminal guard applies to an `ACTIVE` row with `replacement_provider_ref` and
+  `replacement_committed_at` set. `replacement_committed_at` is exclusive to the
+  downgrade commit flow, so it identifies a committed downgrade replacement exactly;
+  `pending_plan` does not, because a provider-update downgrade sets it too. No
+  `replacement_kind` column is added.
 - D1 stays fully out of scope: `fetch_invoices()` stays fail-closed and no provider
   behavior is inferred.
 
