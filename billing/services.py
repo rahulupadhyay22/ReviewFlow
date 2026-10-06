@@ -27,6 +27,7 @@ from django.db.models import F, Q, QuerySet
 from django.utils import timezone as dj_timezone
 
 from accounts.models import TeamMember
+from auditlog.models import AuditLog
 from auditlog.services import record
 from billing import razorpay
 from billing.exceptions import (
@@ -38,6 +39,7 @@ from billing.exceptions import (
     PlanNotAvailable,
     PlanUnchanged,
     ProviderStateUnsupported,
+    ReplacementActivating,
     SubscriptionActivating,
     SubscriptionCancelling,
     SubscriptionNotCancellable,
@@ -136,6 +138,8 @@ AUDIT_DUNNING_CHECKPOINT = "billing.dunning_checkpoint"
 AUDIT_RECOVERED = "billing.subscription_recovered"
 AUDIT_CANCELLED = "billing.subscription_cancelled"
 AUDIT_EXPIRED = "billing.subscription_expired"
+AUDIT_REPLACEMENT_ABANDONED = "billing.replacement_abandoned"
+AUDIT_REPLACEMENT_PAID_AFTER_END = "billing.replacement_paid_after_end"
 
 
 def _merchant_id() -> uuid.UUID:
@@ -397,11 +401,12 @@ def _lock_subscription(subscription_id) -> Subscription:
     """Subscription row lock, then the current UsageRecord row lock, even when
     the caller will not write usage: that is what orders every
     entitlement-changing transition against reserve_quota_unit()."""
-    subscription = (
-        Subscription.objects.select_for_update(of=("self",))
-        .select_related("plan")
-        .get(pk=subscription_id)
-    )
+    # Lock the bare row, then read it with its plan. A locking query that joins
+    # `plan` is re-checked by PostgreSQL against the row version a concurrent
+    # transaction just committed; if that transaction changed plan_id (a plan
+    # switch) the join no longer matches and the row would vanish for the waiter.
+    Subscription.objects.select_for_update().get(pk=subscription_id)
+    subscription = Subscription.objects.select_related("plan").get(pk=subscription_id)
     if subscription.current_period_start is not None and subscription.current_period_end is not None:
         list(
             UsageRecord.objects.select_for_update().filter(
@@ -516,9 +521,15 @@ def _apply_snapshot(
             changed, settled, advanced = _apply_active(sub, entity, invoices, plan, fields, actor)
         elif provider_status in ("pending", "halted"):
             changed = _apply_payment_failed(sub, now, fields)
+            if changed:
+                # The PAST_DUE transition abandons a non-active, uncommitted replacement.
+                _abandon_unless_active(sub, fields, reason="past_due", abandonable=_not_active)
         elif provider_status in TERMINAL_PROVIDER_STATUSES:
             if not _committed_downgrade_replacement(sub):
                 changed = _apply_terminal(sub, now, fields)
+                if changed:
+                    # The row ended: so does an uncommitted, non-active replacement.
+                    _abandon_unless_active(sub, fields, reason="row_ended", abandonable=_not_active)
             # else (spec 07-plan-change-replacement, rule 5): the commit scheduled
             # the old subscription to end at its cycle end on purpose, so its
             # terminal status does not move the row while the committed replacement
@@ -719,7 +730,9 @@ def _audit_plan_change(
     effective: str | None = None,
 ) -> None:
     # Unless given, `effective` uses the pending plan as it was before
-    # _take_plan cleared it.
+    # _take_plan cleared it. A replacement upgrade could only be created with the
+    # OWNER's no-credit acknowledgement (C1), so its switch records that it was given.
+    extra = {"acknowledged_no_credit": True} if effective == "REPLACEMENT_IMMEDIATE" else {}
     _audit(
         AUDIT_PLAN_CHANGED,
         sub,
@@ -728,7 +741,239 @@ def _audit_plan_change(
         from_plan=old_plan.name,
         to_plan=plan.name,
         plan_id=str(plan.pk),
+        **extra,
     )
+
+
+# --- plan-change replacement lifecycle (spec 07-plan-change-replacement, W4) ------------
+#
+# The replacement's provider status is never persisted: every abandon re-reads it
+# under the row lock, so a stale read can never abandon a replacement the provider
+# now reports `active` (ReviewFlow never cancels one). An unreadable replacement is
+# left exactly as it is (fail closed) and retried by the next sweep.
+
+# Provider statuses that mean the replacement failed or is unpaid, for an ACTIVE row.
+_REPLACEMENT_FAILED = frozenset({"pending", "halted", "cancelled", "expired"})
+# Once the row has ended or entered grace, any known non-active status is abandoned.
+_REPLACEMENT_NOT_ACTIVE = frozenset({"created", "authenticated"}) | _REPLACEMENT_FAILED
+
+
+def _not_active(entity: dict) -> bool:
+    return entity["status"] in _REPLACEMENT_NOT_ACTIVE
+
+
+def _failed_or_lapsed(now: datetime, expires_at: datetime):
+    """The abandon test for an ACTIVE row: the provider says it failed, or it is
+    still `created` past its authorization deadline."""
+
+    def test(entity: dict) -> bool:
+        return entity["status"] in _REPLACEMENT_FAILED or (
+            entity["status"] == "created" and now >= expires_at
+        )
+
+    return test
+
+
+def _refetch_replacement(sub: Subscription) -> dict | None:
+    """The replacement as Razorpay reports it now, or None when it cannot be
+    read (a failure or a malformed entity): the caller then changes nothing."""
+    ref = sub.replacement_provider_ref
+    try:
+        entity = razorpay.fetch_subscription(ref)
+    except (BillingProviderUnavailable, BillingProviderRejected, BillingNotConfigured) as exc:
+        logger.warning(
+            "Replacement re-read for merchant %s failed with %s", sub.merchant_id, type(exc).__name__
+        )
+        return None
+    if not isinstance(entity, dict) or entity.get("id") != ref or not isinstance(entity.get("status"), str):
+        return None
+    return entity
+
+
+def _replacement_plan(entity: dict) -> Plan | None:
+    plan_id = entity.get("plan_id")
+    return Plan.objects.filter(provider_plan_id=plan_id).first() if isinstance(plan_id, str) else None
+
+
+def _abandon_unless_active(sub: Subscription, fields: set[str], *, reason: str, abandonable):
+    """Under the row lock: re-read the replacement and, only if `abandonable(entity)`,
+    move it to the retired slot (a local state move, no provider call: the sweep
+    cancels it later). Returns (abandoned, entity); entity is None when it could not
+    be read. It never abandons a committed replacement, an `active` one, or one
+    that would overwrite an occupied retired slot. The caller saves `fields`."""
+    if sub.replacement_provider_ref is None or sub.replacement_committed_at is not None:
+        return False, None
+    entity = _refetch_replacement(sub)
+    if entity is None or not abandonable(entity):
+        return False, entity
+    if sub.retired_provider_ref is not None:
+        logger.warning("Replacement for merchant %s not abandoned: retired slot occupied", sub.merchant_id)
+        return False, entity
+    target = _replacement_plan(entity)
+    departing = sub.replacement_provider_ref
+    sub.retired_provider_ref = departing
+    sub.retired_kind = Subscription.RetiredKind.ABANDONED_REPLACEMENT
+    sub.replacement_provider_ref = None
+    sub.replacement_expires_at = None
+    sub.replacement_committed_at = None
+    sub.replacement_cancel_confirmed_at = None
+    # A downgrade replacement set pending_plan; a provider-update downgrade's
+    # pending_plan is a different thing and survives.
+    if target is not None and sub.pending_plan_id == target.pk:
+        sub.pending_plan = None
+        fields.add("pending_plan")
+    fields.update(
+        {
+            "retired_provider_ref",
+            "retired_kind",
+            "replacement_provider_ref",
+            "replacement_expires_at",
+            "replacement_committed_at",
+            "replacement_cancel_confirmed_at",
+        }
+    )
+    _mark_events_processed(departing)  # events naming the departed ref can never match the row again
+    _audit(
+        AUDIT_REPLACEMENT_ABANDONED,
+        sub,
+        None,
+        reason=reason,
+        plan_name=target.name if target is not None else None,
+    )
+    return True, entity
+
+
+def _mark_events_processed(ref: str) -> None:
+    stamp = dj_timezone.now()
+    BillingEvent.objects.filter(provider_ref=ref, processed_at__isnull=True).update(
+        processed_at=stamp, updated_at=stamp
+    )
+
+
+def _apply_replacement_snapshot(
+    subscription: Subscription, entity: dict, invoices: list[dict] | None, fetch_started_at: datetime
+) -> SnapshotResult:
+    """The replacement's counterpart of _apply_snapshot: `active` switches (only on
+    a paid proof), a failed or lapsed one is abandoned, anything else is no change.
+    It never reaches _apply_payment_failed or _apply_terminal and never records the
+    replacement's status on the row. A committed downgrade replacement is not
+    abandoned here."""
+    if subscription.merchant_id != _merchant_id():
+        raise TenantContextError("Subscription is not the current merchant's.")
+    S = Subscription.Status
+    with tenant_atomic():
+        sub = _lock_subscription(subscription.pk)
+        ref = entity.get("id") if isinstance(entity, dict) else None
+        status = entity.get("status") if isinstance(entity, dict) else None
+        if not ref or sub.replacement_provider_ref != ref or not isinstance(status, str):
+            return SnapshotResult(False, False)  # stale (already switched or abandoned) or malformed
+
+        if status == "active":
+            return _replacement_active(sub, entity, invoices, fetch_started_at)
+        if sub.replacement_committed_at is not None:
+            return SnapshotResult(False, True)
+
+        if sub.status != S.ACTIVE:  # PAST_DUE, CANCELLED or EXPIRED: any non-active status goes
+            abandonable = _not_active
+            reason = "past_due" if sub.status == S.PAST_DUE else "row_ended"
+            wanted = status in _REPLACEMENT_NOT_ACTIVE
+        else:
+            now = dj_timezone.now()
+            abandonable = _failed_or_lapsed(now, sub.replacement_expires_at)
+            reason = "provider_failed" if status in _REPLACEMENT_FAILED else "deadline_passed"
+            wanted = abandonable(entity)
+        if not wanted:
+            # created/authenticated: awaiting authorization or the first charge.
+            return SnapshotResult(False, True)
+        fields: set[str] = set()
+        abandoned, _ = _abandon_unless_active(sub, fields, reason=reason, abandonable=abandonable)
+        if not abandoned:
+            return SnapshotResult(False, False)
+        sub.save(update_fields=sorted(fields | {"updated_at"}))
+        return SnapshotResult(True, True)
+
+
+def _replacement_active(
+    sub: Subscription, entity: dict, invoices: list[dict] | None, fetch_started_at: datetime
+) -> SnapshotResult:
+    """Provider `active`. Nothing happens without the paid-entitlement proof
+    (current_period_paid): `active` alone grants nothing."""
+    S = Subscription.Status
+    if current_period_paid(entity, invoices) is None:
+        return SnapshotResult(False, False)  # fail closed; events stay unprocessed
+    plan = _replacement_plan(entity)
+    if plan is None:
+        logger.warning("Replacement snapshot for merchant %s names an unknown plan", sub.merchant_id)
+        return SnapshotResult(False, False)
+    if sub.status in (S.CANCELLED, S.EXPIRED):
+        # Paid, but the row ended: no switch and no refund. Staff are told once.
+        if not AuditLog.objects.filter(
+            action=AUDIT_REPLACEMENT_PAID_AFTER_END,
+            target_type="billing.subscription",
+            target_id=str(sub.pk),
+        ).exists():
+            _audit(AUDIT_REPLACEMENT_PAID_AFTER_END, sub, None, row_status=sub.status, plan_name=plan.name)
+        return SnapshotResult(False, True)
+    if sub.status not in (S.ACTIVE, S.PAST_DUE):
+        return SnapshotResult(False, False)
+    return switch_to_replacement(sub, entity, invoices, plan, fetch_started_at)
+
+
+def switch_to_replacement(
+    sub: Subscription, entity: dict, invoices: list[dict] | None, plan: Plan, fetch_started_at: datetime
+) -> SnapshotResult:
+    """The switch, reached only from _apply_replacement_snapshot on a row it has
+    locked, after current_period_paid() is true for the replacement. It applies
+    the replacement's plan and period through _apply_active (so the audit rows,
+    the ledger entry and a PAST_DUE recovery are the existing ones), moves the old
+    ref to the retired slot, clears the replacement columns, pending_plan and the
+    cancellation flag, and opens a fresh UsageRecord. A second run changes
+    nothing: the replacement ref is gone, so that snapshot is stale."""
+    start = _from_unix(entity.get("current_start"))
+    if start is None or start == sub.current_period_start:
+        logger.warning("Replacement for merchant %s has no new period", sub.merchant_id)
+        return SnapshotResult(False, False)
+    if sub.retired_provider_ref is not None:
+        logger.warning("Replacement for merchant %s not switched: retired slot occupied", sub.merchant_id)
+        return SnapshotResult(False, False)
+    departing = sub.payment_provider_ref
+    effective = (
+        "REPLACEMENT_SCHEDULED" if plan.monthly_price < sub.plan.monthly_price else "REPLACEMENT_IMMEDIATE"
+    )
+    fields = {"provider_status", "provider_synced_at"}
+    _, _, advanced = _apply_active(sub, entity, invoices, plan, fields, None, effective)
+    if not advanced:
+        return SnapshotResult(False, False)
+    sub.retired_provider_ref = departing
+    sub.retired_kind = Subscription.RetiredKind.SWITCHED_OLD
+    sub.payment_provider_ref = sub.replacement_provider_ref
+    sub.replacement_provider_ref = None
+    sub.replacement_expires_at = None
+    sub.replacement_committed_at = None
+    sub.replacement_cancel_confirmed_at = None
+    sub.pending_plan = None
+    sub.cancel_at_period_end = False
+    sub.provider_status = entity["status"][:16]
+    sub.provider_synced_at = fetch_started_at
+    fields.update(
+        {
+            "payment_provider_ref",
+            "replacement_provider_ref",
+            "replacement_expires_at",
+            "replacement_committed_at",
+            "replacement_cancel_confirmed_at",
+            "retired_provider_ref",
+            "retired_kind",
+            "pending_plan",
+            "cancel_at_period_end",
+            "updated_at",
+        }
+    )
+    sub.save(update_fields=sorted(fields))
+    reset_usage_period(sub)
+    if departing:
+        _mark_events_processed(departing)
+    return SnapshotResult(True, True)
 
 
 def _fetch_invoices_if_needed(ref, old_status, old_period_start, entity) -> list[dict] | None:
@@ -750,9 +995,57 @@ def sync_subscription() -> None:
     """Fetch the subscription's current state from Razorpay and converge to
     it. The webhook is only a signal; transitions come from this fetched state.
 
-    Every provider call happens outside any transaction of its own: read the
-    ref, fetch, then lock and apply. A failed fetch applies nothing and leaves
-    the events unprocessed for the next sweep."""
+    Two independent steps: the plan-change replacement (when there is one), then
+    the main subscription. The main step runs even when the replacement step
+    raises: the D1 NotImplementedError is caught nowhere and still propagates,
+    after the main subscription has had its own sync."""
+    try:
+        _sync_replacement()
+    finally:
+        _sync_main()
+
+
+def _sync_replacement() -> None:
+    """Fetch the replacement and converge to it (switch or abandon). Every
+    provider call here happens outside any transaction of ours: read the ref,
+    fetch, then lock and apply. A failed fetch applies nothing."""
+    merchant_id = _merchant_id()
+    with tenant_atomic():
+        subscription = Subscription.objects.first()
+        if subscription is None or not subscription.replacement_provider_ref:
+            return
+        ref = subscription.replacement_provider_ref
+        old_status = subscription.status
+        old_period_start = subscription.current_period_start
+
+    fetch_started_at = dj_timezone.now()
+    try:
+        entity = razorpay.fetch_subscription(ref)
+        if not isinstance(entity, dict) or entity.get("id") != ref:
+            return
+        invoices = _fetch_invoices_if_needed(ref, old_status, old_period_start, entity)
+    except (BillingProviderUnavailable, BillingProviderRejected, BillingNotConfigured) as exc:
+        logger.warning("Replacement sync for merchant %s failed with %s", merchant_id, type(exc).__name__)
+        return
+
+    with tenant_atomic():
+        result = _apply_replacement_snapshot(subscription, entity, invoices, fetch_started_at)
+        if result.settled:
+            # Only this replacement's own events, and only those the fetch could
+            # have observed (the same margin as the main step).
+            stamp = dj_timezone.now()
+            BillingEvent.objects.filter(
+                provider_ref=ref,
+                processed_at__isnull=True,
+                created_at__lt=fetch_started_at - EVENT_CLOCK_SKEW,
+            ).update(processed_at=stamp, updated_at=stamp)
+
+
+def _sync_main() -> None:
+    """The main subscription's sync (the merged behavior). Every provider call
+    happens outside any transaction of its own: read the ref, fetch, then lock
+    and apply. A failed fetch applies nothing and leaves the events unprocessed
+    for the next sweep."""
     merchant_id = _merchant_id()
     with tenant_atomic():
         subscription = Subscription.objects.first()
@@ -1163,8 +1456,31 @@ def _store_new_provider_subscription(subscription: Subscription, plan: Plan, ent
     _audit(AUDIT_CHECKOUT_STARTED, subscription, actor, plan_id=str(plan.pk), plan_name=plan.name)
 
 
+def _clear_replacement_before_reset(subscription: Subscription) -> None:
+    """D2 guard: a new checkout on an INCOMPLETE, CANCELLED or EXPIRED row replaces
+    the row's provider subscription, which would orphan a plan-change replacement.
+    A replacement the provider reports `active` is never cancelled, so the checkout
+    is refused (409 replacement_activating); otherwise it is abandoned first.
+    Nothing changes on a refusal."""
+    if subscription.replacement_provider_ref is None:
+        return
+    fields: set[str] = set()
+    abandoned, entity = _abandon_unless_active(
+        subscription, fields, reason="row_ended", abandonable=_not_active
+    )
+    if abandoned:
+        subscription.save(update_fields=sorted(fields | {"updated_at"}))
+    elif entity is None and subscription.replacement_committed_at is None:
+        raise BillingProviderUnavailable()  # unreadable: fail closed
+    elif entity is not None and entity["status"] == "active":
+        raise ReplacementActivating()
+    else:
+        raise ProviderStateUnsupported()  # committed, or a status ReviewFlow never touches
+
+
 def _replace_provider_subscription(subscription, plan, actor, *, cancel_ref=None) -> CheckoutResult:
     with tenant_atomic():
+        _clear_replacement_before_reset(subscription)
         if cancel_ref is not None:
             _cancel_old_provider_subscription(cancel_ref)
         entity = _create_provider_subscription(plan)
@@ -1380,6 +1696,10 @@ def _cancel_past_due(subscription: Subscription, actor) -> Subscription:
             to_status=S.CANCELLED,
             effective="IMMEDIATE",
         )
+        # The row ended: so does an uncommitted, non-active replacement.
+        fields: set[str] = set()
+        if _abandon_unless_active(subscription, fields, reason="row_ended", abandonable=_not_active)[0]:
+            subscription.save(update_fields=sorted(fields | {"updated_at"}))
     if ref and provider_may_be_cancelled(provider_status):
         try:
             entity = razorpay.cancel_subscription(ref, at_cycle_end=False)

@@ -55,3 +55,16 @@ def set_retired(merchant, *, ref=RETIRED_REF, kind=Subscription.RetiredKind.SWIT
 def replacement_entity(plan, *, ref=REPL_REF, status="authenticated", **kwargs):
     """The provider entity for a replacement ref (see snapshot_helpers.entity)."""
     return snapshot_helpers.entity(plan, status=status, ref=ref, **kwargs)
+
+
+NEW_START = snapshot_helpers.NOW - timedelta(days=1)  # a period that differs from the row's
+
+
+def provide_replacement(provider, plan, *, status="active", start=NEW_START, paid=True, ref=REPL_REF, **invoice_over):
+    """The FakeProvider answers for the replacement ref: its entity and, when
+    `paid`, one qualifying paid invoice for it (current_period_paid inputs).
+    `invoice_over` overrides invoice fields to make it non-qualifying."""
+    provider.entities[ref] = replacement_entity(plan, ref=ref, status=status, start=start)
+    provider.invoices_by_ref[ref] = (
+        [snapshot_helpers.invoice(start=start, **{"subscription_id": ref, **invoice_over})] if paid else []
+    )

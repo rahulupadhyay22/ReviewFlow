@@ -25,6 +25,7 @@ from billing.tests.replacement_helpers import (
     REPL_REF,
     RETIRED_REF,
     clear_replacement,
+    replacement_entity,
     set_replacement,
     set_retired,
 )
@@ -41,8 +42,11 @@ def w(lifecycle_setup):
 
 
 def sync(owner):
+    # These tests cover the main-subscription step W3 owns. Since W4,
+    # sync_subscription() also runs the replacement step first (test_replacement_switch
+    # and test_replacement_abandon cover that), so the main step is driven alone here.
     with tenant_context(owner.merchant.id):
-        services.sync_subscription()
+        services._sync_main()
 
 
 def due(owner):
@@ -88,6 +92,7 @@ def test_a_replacement_with_pending_plan_but_no_commit_is_not_a_committed_downgr
     without replacement_committed_at must not be treated as a committed downgrade."""
     w.sub(w.a, "ACTIVE", plan=w.big)
     set_replacement(w.a.merchant, committed=False, downgrade_to=w.small)
+    w.provider.entities[REPL_REF] = replacement_entity(w.small)  # the row ends, so W4 re-reads it
     w.provider.entities[w.ref(w.a)] = entity(w.big, status="cancelled")
     sync(w.a)
     assert read_state(w.a.merchant).status == "CANCELLED"
@@ -98,6 +103,7 @@ def test_an_upgrade_replacement_beside_a_provider_update_downgrade_is_not_deferr
     left pending_plan set, then an upgrade replacement exists (no commit point)."""
     w.sub(w.a, "ACTIVE", plan=w.big, pending_plan=w.small)
     set_replacement(w.a.merchant)  # an upgrade replacement: never committed
+    w.provider.entities[REPL_REF] = replacement_entity(w.small)  # the row ends, so W4 re-reads it
     w.provider.entities[w.ref(w.a)] = entity(w.big, status="cancelled")
     sync(w.a)
     assert read_state(w.a.merchant).status == "CANCELLED"
@@ -106,6 +112,7 @@ def test_an_upgrade_replacement_beside_a_provider_update_downgrade_is_not_deferr
 def test_an_upgrade_replacement_does_not_defer_it(w):
     w.sub(w.a, "ACTIVE")
     set_replacement(w.a.merchant)  # an upgrade replacement
+    w.provider.entities[REPL_REF] = replacement_entity(w.small)  # the row ends, so W4 re-reads it
     w.provider.entities[w.ref(w.a)] = entity(w.small, status="cancelled")
     sync(w.a)
     assert read_state(w.a.merchant).status == "CANCELLED"
