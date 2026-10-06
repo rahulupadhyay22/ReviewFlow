@@ -37,9 +37,11 @@ from billing.exceptions import (
     InvalidWebhookPayload,
     PlanChangeUnsupported,
     PlanNotAvailable,
+    NoCreditAcknowledgementRequired,
     PlanUnchanged,
     ProviderStateUnsupported,
     ReplacementActivating,
+    ReplacementInProgress,
     SubscriptionActivating,
     SubscriptionCancelling,
     SubscriptionNotCancellable,
@@ -138,7 +140,8 @@ AUDIT_DUNNING_CHECKPOINT = "billing.dunning_checkpoint"
 AUDIT_RECOVERED = "billing.subscription_recovered"
 AUDIT_CANCELLED = "billing.subscription_cancelled"
 AUDIT_EXPIRED = "billing.subscription_expired"
-AUDIT_REPLACEMENT_ABANDONED = "billing.replacement_abandoned"
+AUDIT_REPLACEMENT_STARTED = "billing.replacement_started"
+AUDIT_REPLACEMENT_ABANDONED ="billing.replacement_abandoned"
 AUDIT_REPLACEMENT_PAID_AFTER_END = "billing.replacement_paid_after_end"
 
 
@@ -814,6 +817,7 @@ def _abandon_unless_active(sub: Subscription, fields: set[str], *, reason: str, 
     sub.retired_provider_ref = departing
     sub.retired_kind = Subscription.RetiredKind.ABANDONED_REPLACEMENT
     sub.replacement_provider_ref = None
+    sub.replacement_plan = None
     sub.replacement_expires_at = None
     sub.replacement_committed_at = None
     sub.replacement_cancel_confirmed_at = None
@@ -827,6 +831,7 @@ def _abandon_unless_active(sub: Subscription, fields: set[str], *, reason: str, 
             "retired_provider_ref",
             "retired_kind",
             "replacement_provider_ref",
+            "replacement_plan",
             "replacement_expires_at",
             "replacement_committed_at",
             "replacement_cancel_confirmed_at",
@@ -948,6 +953,7 @@ def switch_to_replacement(
     sub.retired_kind = Subscription.RetiredKind.SWITCHED_OLD
     sub.payment_provider_ref = sub.replacement_provider_ref
     sub.replacement_provider_ref = None
+    sub.replacement_plan = None
     sub.replacement_expires_at = None
     sub.replacement_committed_at = None
     sub.replacement_cancel_confirmed_at = None
@@ -959,6 +965,7 @@ def switch_to_replacement(
         {
             "payment_provider_ref",
             "replacement_provider_ref",
+            "replacement_plan",
             "replacement_expires_at",
             "replacement_committed_at",
             "replacement_cancel_confirmed_at",
@@ -1510,9 +1517,10 @@ def _first_checkout(plan: Plan, actor) -> CheckoutResult | None:
 # --- checkout ------------------------------------------------------------------------
 
 
-def start_checkout(*, actor: TeamMember, plan_id) -> CheckoutResult:
+def start_checkout(*, actor: TeamMember, plan_id, acknowledge_no_credit: bool = False) -> CheckoutResult:
     """The state table under POST /billing/checkout. Must run inside the
-    request's transaction (see _require_request_transaction)."""
+    request's transaction (see _require_request_transaction).
+    `acknowledge_no_credit` matters only to a replacement upgrade (C1)."""
     _merchant_id()
     _require_request_transaction()
     plan = _offered_plan(plan_id)
@@ -1531,6 +1539,10 @@ def start_checkout(*, actor: TeamMember, plan_id) -> CheckoutResult:
         # local write.
         raise SubscriptionPastDue()
 
+    if subscription.status == S.ACTIVE and subscription.replacement_provider_ref:
+        # A pending plan-change replacement: no reconcile and no provider call.
+        return _replacement_pending(subscription, plan)
+
     entity = None
     status_before = subscription.status
     if subscription.payment_provider_ref:
@@ -1548,13 +1560,15 @@ def start_checkout(*, actor: TeamMember, plan_id) -> CheckoutResult:
             # further provider call, no further audit row. A row that was
             # already ACTIVE before the request keeps the 422 below.
             return CheckoutResult(created=False, checkout=None)
-        return _checkout_active(subscription, plan, actor)
+        return _checkout_active(subscription, plan, actor, acknowledge_no_credit)
     if subscription.status == S.INCOMPLETE:
         return _checkout_incomplete(subscription, entity, plan, actor)
     return _checkout_ended(subscription, entity, plan, actor)  # CANCELLED / EXPIRED
 
 
-def _checkout_active(subscription: Subscription, plan: Plan, actor) -> CheckoutResult:
+def _checkout_active(
+    subscription: Subscription, plan: Plan, actor, acknowledge_no_credit: bool = False
+) -> CheckoutResult:
     if subscription.cancel_at_period_end:
         raise SubscriptionCancelling()
     current = subscription.plan
@@ -1570,8 +1584,15 @@ def _checkout_active(subscription: Subscription, plan: Plan, actor) -> CheckoutR
         entity = razorpay.update_subscription(
             ref, plan.provider_plan_id, "now" if upgrade else "cycle_end"
         )
-    except BillingProviderRejected:
-        # UPI, eMandate or a domestic card: Razorpay refuses the update (S4).
+    except BillingProviderRejected as refusal:
+        # UPI, eMandate or a domestic card: Razorpay refuses the update (S4). Only a
+        # refusal classified as "cannot be updated", with that kind flag on, falls
+        # back to a replacement; every other refusal is the merged 409.
+        kind = "UPGRADE" if upgrade else "DOWNGRADE"
+        if is_update_unsupported_refusal(refusal) and replacement_enabled(kind):
+            return start_plan_change_replacement(
+                subscription, plan, kind=kind, actor=actor, acknowledge_no_credit=acknowledge_no_credit
+            )
         raise PlanChangeUnsupported() from None
 
     with tenant_atomic():
@@ -1603,6 +1624,95 @@ def _checkout_active(subscription: Subscription, plan: Plan, actor) -> CheckoutR
                 plan_id=str(plan.pk),
             )
     return CheckoutResult(created=False, checkout=None)
+
+
+# --- plan-change replacement checkout (spec 07-plan-change-replacement, W5) -------------
+
+
+def _replacement_pending(subscription: Subscription, plan: Plan) -> CheckoutResult:
+    """A replacement is already pending: the same target plan returns its existing
+    checkout, any other plan (the current one included) is refused. No provider call."""
+    if subscription.replacement_plan_id == plan.pk:
+        return CheckoutResult(
+            created=False, checkout=_checkout_payload(subscription.replacement_provider_ref)
+        )
+    raise ReplacementInProgress()
+
+
+def _create_replacement_subscription(plan: Plan, *, start_at, expire_by, current_ref) -> dict:
+    try:
+        entity = razorpay.create_subscription(
+            plan.provider_plan_id, start_at=start_at, expire_by=expire_by
+        )
+    except BillingProviderRejected:
+        raise BillingProviderUnavailable() from None
+    # An unusable id (or the current subscription itself) is never stored: no
+    # webhook could be resolved through it.
+    if (
+        not isinstance(entity, dict)
+        or not is_valid_billing_ref(entity.get("id"))
+        or entity["id"] == current_ref
+    ):
+        raise BillingProviderUnavailable()
+    return entity
+
+
+def start_plan_change_replacement(
+    subscription: Subscription, plan: Plan, *, kind: str, actor: TeamMember, acknowledge_no_credit: bool
+) -> CheckoutResult:
+    """Called by _checkout_active after a classified refusal of the provider update,
+    on the ACTIVE, not-cancelling row locked by the request. Checks, in order and
+    before any provider call: the window setting for the kind (503), the downgrade
+    verification field and commit cutoff (409 plan_change_unsupported), the retired
+    slot (409 replacement_in_progress), the upgrade no-credit acknowledgement (422).
+    The replacement is then created (an upgrade starts now, a downgrade at the old
+    period end), validated, and stored; the plan and entitlement stay as they are.
+    A failure before the store leaves nothing behind."""
+    window = replacement_window(kind)  # BillingNotConfigured when unset
+    now = dj_timezone.now()
+    start_at = None
+    if kind == "UPGRADE":
+        expires_at = now + window
+    else:
+        # C2: it starts at the next period; its start is verified from the entity at
+        # the commit point. Without the verification field, or past the commit
+        # cutoff, no payer is asked to authorize something that could never commit.
+        cutoff = subscription.current_period_end - window
+        if razorpay.DOWNGRADE_START_FIELD is None or now >= cutoff:
+            raise PlanChangeUnsupported()
+        # expire_by is strictly before the cutoff: exactly 1 second (not a setting).
+        start_at = int(subscription.current_period_end.timestamp())
+        expires_at = cutoff - timedelta(seconds=1)
+    if subscription.retired_provider_ref is not None:
+        raise ReplacementInProgress()
+    if kind == "UPGRADE" and acknowledge_no_credit is not True:
+        raise NoCreditAcknowledgementRequired()
+
+    entity = _create_replacement_subscription(
+        plan,
+        start_at=start_at,
+        expire_by=int(expires_at.timestamp()),
+        current_ref=subscription.payment_provider_ref,
+    )
+    with tenant_atomic():
+        subscription.replacement_provider_ref = entity["id"]
+        subscription.replacement_plan = plan
+        subscription.replacement_expires_at = expires_at
+        fields = ["replacement_provider_ref", "replacement_plan", "replacement_expires_at", "updated_at"]
+        if kind == "DOWNGRADE":
+            subscription.pending_plan = plan
+            fields.append("pending_plan")
+        subscription.save(update_fields=fields)
+        _audit(
+            AUDIT_REPLACEMENT_STARTED,
+            subscription,
+            actor,
+            kind=kind,
+            from_plan=subscription.plan.name,
+            to_plan=plan.name,
+            plan_id=str(plan.pk),
+        )
+    return CheckoutResult(created=True, checkout=_checkout_payload(entity["id"]))
 
 
 def _checkout_incomplete(subscription, entity, plan: Plan, actor) -> CheckoutResult:

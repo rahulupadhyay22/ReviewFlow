@@ -183,6 +183,12 @@ columns):**
   deadline. Required whenever `replacement_provider_ref` is set.
 - `replacement_committed_at` — `DateTimeField(null=True)`. The downgrade
   commit-intent marker. Only allowed when the replacement ref is set.
+- `replacement_plan` — `ForeignKey(Plan, PROTECT, null=True)`. The plan the pending
+  replacement is for; set exactly when `replacement_provider_ref` is (migration
+  `0005_subscription_replacement_plan`, constraint
+  `billing_subscription_replacement_plan_set`). It is the local record of the target
+  for the repeat and in-progress answers and for `GET /billing/subscription`.
+  (W5 amendment, approved 2026-10-06.)
 - `retired_provider_ref` — `CharField(max_length=64, null=True)`. The one
   subscription awaiting confirmed termination: the old subscription after a
   switch, or an abandoned replacement.
@@ -387,8 +393,11 @@ Names are indicative; signatures follow `billing/services.py` conventions
    ever asked to authorize a replacement that cannot be committed.
 4. The replacement is created at Razorpay (`create_subscription`; an upgrade
    starts immediately with `expire_by` from the upgrade window, a downgrade
-   starts at the old `current_period_end` with `expire_by` before the commit
-   cutoff). The returned id is validated, then stored with
+   starts at the old `current_period_end` with `expire_by` strictly before the
+   commit cutoff: exactly 1 second before it, `expire_by = commit_cutoff - 1 second`,
+   where the cutoff keeps its definition, old period end minus
+   `BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN`. The 1 second only makes "before"
+   strict; it is not a second margin or setting). The returned id is validated, then stored with
    `replacement_expires_at`; a downgrade also sets `pending_plan`. One audit
    row `billing.replacement_started`. The row, plan, period and entitlement
    are unchanged.
@@ -863,6 +872,19 @@ applies:
   downgrade commit flow, so it identifies a committed downgrade replacement exactly;
   `pending_plan` does not, because a provider-update downgrade sets it too. No
   `replacement_kind` column is added.
+- A seventh column, `replacement_plan` (FK to `Plan`), records the pending replacement's
+  target plan; none of the six stored it for an upgrade (approved 2026-10-06, W5).
+- A downgrade replacement's `expire_by` (and `replacement_expires_at`) is the commit
+  cutoff minus exactly 1 second, so it is strictly before the cutoff (approved
+  2026-10-06, W5). The configured margin and its meaning are unchanged.
+- `razorpay.DOWNGRADE_START_FIELD` is `None` until G-2 evidence is recorded; W5 only
+  checks it for `None` (no downgrade replacement is created while it is), and it makes
+  no provider call (P7).
+- OPEN, for W6 (not resolved here): the commit verification asks that the replacement's
+  expiry "is not before the boundary" (old period end), which cannot hold for an
+  `expire_by` that is strictly before the cutoff, itself before the boundary. The spec
+  names only one expiry field, so no distinction can be drawn without inventing provider
+  behavior; it needs a ruling before W6.
 - D1 stays fully out of scope: `fetch_invoices()` stays fail-closed and no provider
   behavior is inferred.
 

@@ -23,6 +23,7 @@ def read_state(merchant) -> SimpleNamespace:
             provider_status=sub.provider_status,
             provider_synced_at=sub.provider_synced_at,
             replacement_provider_ref=sub.replacement_provider_ref,
+            replacement_plan_id=sub.replacement_plan_id,
             replacement_expires_at=sub.replacement_expires_at,
             replacement_committed_at=sub.replacement_committed_at,
             replacement_cancel_confirmed_at=sub.replacement_cancel_confirmed_at,

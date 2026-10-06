@@ -46,6 +46,7 @@ def pair(make_merchant, make_plan, make_subscription):
         plan,
         ref="sub_AAA",
         replacement_provider_ref="sub_RRR",
+        replacement_plan=plan,
         replacement_expires_at=_later(),
         retired_provider_ref="sub_OLD",
         retired_kind="SWITCHED_OLD",
@@ -112,6 +113,7 @@ def test_lookup_by_the_replacement_ref_cannot_insert(make_merchant, make_plan):
                 status="INCOMPLETE",
                 payment_provider_ref="sub_X",
                 replacement_provider_ref="sub_NEW",
+                replacement_plan=plan,
                 replacement_expires_at=_later(),
             ).save(force_insert=True)
 
@@ -170,6 +172,7 @@ def test_a_tenant_cannot_insert_a_row_for_another_merchant_with_replacement_colu
                 status="INCOMPLETE",
                 payment_provider_ref="sub_X",
                 replacement_provider_ref="sub_Y",
+                replacement_plan=plan,
                 replacement_expires_at=_later(),
             ).save(force_insert=True)
 
@@ -185,7 +188,7 @@ def _columns():
         return {r[0] for r in cur.fetchall()}
 
 
-def test_0003_and_0004_reverse_and_reapply_with_the_new_columns_empty(pair):
+def test_0003_to_0005_reverse_and_reapply_with_the_new_columns_empty(pair):
     """`migrate billing 0002` reverses 0004 then 0003 (the new columns are dropped,
     so their data is discarded; this test runs with them empty, per the spec).
     Applying them again restores the columns and the two-column policy."""
@@ -193,13 +196,14 @@ def test_0003_and_0004_reverse_and_reapply_with_the_new_columns_empty(pair):
     # The fixture's rows use the new columns; empty them first (the stated precondition).
     with tenant_context(a.merchant_id), tenant_atomic(), connection.cursor() as cur:
         cur.execute(
-            "UPDATE billing_subscription SET replacement_provider_ref = NULL, "
+            "UPDATE billing_subscription SET replacement_provider_ref = NULL, replacement_plan_id = NULL, "
             "replacement_expires_at = NULL, retired_provider_ref = NULL, retired_kind = NULL "
             "WHERE id = %s",
             [str(a.id)],
         )
     new = {
         "replacement_provider_ref",
+        "replacement_plan_id",
         "replacement_expires_at",
         "replacement_committed_at",
         "replacement_cancel_confirmed_at",

@@ -19,11 +19,12 @@ RETIRED_REF = "sub_test_retired"
 
 
 def set_replacement(
-    merchant, *, ref=REPL_REF, expires_in=timedelta(hours=1), committed=False, downgrade_to=None
+    merchant, *, ref=REPL_REF, expires_in=timedelta(hours=1), committed=False, downgrade_to=None, plan=None
 ):
-    """The merchant's subscription gets a replacement ref and its deadline. A
-    downgrade replacement also sets pending_plan (spec rule 8); `committed`
-    records the commit-intent marker."""
+    """The merchant's subscription gets a replacement ref, its target plan and its
+    deadline. A downgrade replacement also sets pending_plan (spec rule 8);
+    `committed` records the commit-intent marker. The target defaults to the
+    downgrade target, else the row's own plan (tests that only need *a* target)."""
     fields = {
         "replacement_provider_ref": ref,
         "replacement_expires_at": dj_timezone.now() + expires_in,
@@ -32,6 +33,7 @@ def set_replacement(
     if downgrade_to is not None:
         fields["pending_plan"] = downgrade_to
     with tenant_context(merchant.id), tenant_atomic():
+        fields["replacement_plan"] = plan or downgrade_to or Subscription.objects.get().plan
         Subscription.objects.update(**fields)
 
 
@@ -40,6 +42,7 @@ def clear_replacement(merchant):
     with tenant_context(merchant.id), tenant_atomic():
         Subscription.objects.update(
             replacement_provider_ref=None,
+            replacement_plan=None,
             replacement_expires_at=None,
             replacement_committed_at=None,
             replacement_cancel_confirmed_at=None,

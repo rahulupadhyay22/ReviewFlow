@@ -104,6 +104,11 @@ class Subscription(BaseModel):
     # replacement exists; nothing writes them until the later phases.
     replacement_provider_ref = models.CharField(max_length=64, null=True, blank=True)
     replacement_expires_at = models.DateTimeField(null=True, blank=True)
+    # The plan the replacement is for (set with the ref): the local record of its
+    # target, needed for the repeat/in-progress answers and the dashboard.
+    replacement_plan = models.ForeignKey(
+        Plan, on_delete=models.PROTECT, null=True, blank=True, related_name="+"
+    )
     replacement_committed_at = models.DateTimeField(null=True, blank=True)
     replacement_cancel_confirmed_at = models.DateTimeField(null=True, blank=True)
     retired_provider_ref = models.CharField(max_length=64, null=True, blank=True)
@@ -167,6 +172,15 @@ class Subscription(BaseModel):
                     & Q(replacement_expires_at__isnull=False)
                 ),
                 name="billing_subscription_replacement_expiry_set",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(replacement_provider_ref__isnull=True) & Q(replacement_plan__isnull=True)
+                )
+                | (
+                    Q(replacement_provider_ref__isnull=False) & Q(replacement_plan__isnull=False)
+                ),
+                name="billing_subscription_replacement_plan_set",
             ),
             models.CheckConstraint(
                 condition=Q(replacement_committed_at__isnull=True)

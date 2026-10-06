@@ -18,17 +18,19 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 NEW_COLUMNS = (
     "replacement_provider_ref",
+    "replacement_plan",
     "replacement_expires_at",
     "replacement_committed_at",
     "replacement_cancel_confirmed_at",
     "retired_provider_ref",
     "retired_kind",
 )
-SEVEN_CONSTRAINTS = {
+NEW_CONSTRAINTS = {
     "billing_subscription_replacement_ref_uniq",
     "billing_subscription_retired_ref_uniq",
     "billing_subscription_replacement_ref_differs",
     "billing_subscription_replacement_expiry_set",
+    "billing_subscription_replacement_plan_set",
     "billing_subscription_replacement_committed_needs_ref",
     "billing_subscription_retired_kind_set",
     "billing_subscription_replacement_confirmed_needs_committed",
@@ -39,9 +41,14 @@ def _later():
     return dj_timezone.now() + timedelta(days=1)
 
 
-def _replacement(**extra):
-    """A valid replacement: a ref and its required deadline."""
-    return {"replacement_provider_ref": "sub_repl1", "replacement_expires_at": _later(), **extra}
+def _replacement(plan, **extra):
+    """A valid replacement: a ref, its target plan and its required deadline."""
+    return {
+        "replacement_provider_ref": "sub_repl1",
+        "replacement_plan": plan,
+        "replacement_expires_at": _later(),
+        **extra,
+    }
 
 
 def test_the_six_columns_exist_and_are_null_by_default(make_merchant, make_plan, make_subscription):
@@ -52,7 +59,7 @@ def test_the_six_columns_exist_and_are_null_by_default(make_merchant, make_plan,
         assert getattr(row, column) is None, column
 
 
-def test_exactly_the_seven_new_constraints_exist_on_the_table():
+def test_exactly_the_new_constraints_exist_on_the_table():
     """Five CHECK constraints are pg_constraint rows; the two conditional (partial)
     unique constraints are unique indexes in PostgreSQL."""
     unique_indexes = {
@@ -62,7 +69,7 @@ def test_exactly_the_seven_new_constraints_exist_on_the_table():
     with connection.cursor() as cur:
         cur.execute(
             "SELECT conname FROM pg_constraint WHERE conrelid = 'billing_subscription'::regclass "
-            "AND (conname LIKE 'billing_subscription_replacement_%%' "
+            "AND contype = 'c' AND (conname LIKE 'billing_subscription_replacement_%%' "
             "OR conname LIKE 'billing_subscription_retired_%%')"
         )
         checks = {r[0] for r in cur.fetchall()}
@@ -73,9 +80,9 @@ def test_exactly_the_seven_new_constraints_exist_on_the_table():
             "OR indexname LIKE 'billing_subscription_retired_%%')"
         )
         uniques = {r[0] for r in cur.fetchall()}
-    assert checks == SEVEN_CONSTRAINTS - unique_indexes
+    assert checks == NEW_CONSTRAINTS - unique_indexes
     assert uniques == unique_indexes
-    assert checks | uniques == SEVEN_CONSTRAINTS
+    assert checks | uniques == NEW_CONSTRAINTS
 
 
 # --- partial uniqueness ------------------------------------------------------------
@@ -83,11 +90,11 @@ def test_exactly_the_seven_new_constraints_exist_on_the_table():
 
 def test_replacement_ref_is_unique_when_set_and_null_repeats(make_merchant, make_plan, make_subscription):
     plan = make_plan()
-    make_subscription(make_merchant("A").merchant, plan, ref="sub_A", **_replacement())
+    make_subscription(make_merchant("A").merchant, plan, ref="sub_A", **_replacement(plan))
     make_subscription(make_merchant("B").merchant, plan, ref="sub_B")  # NULL beside a set value
     make_subscription(make_merchant("C").merchant, plan, ref="sub_C")  # NULL repeats
     with pytest.raises(IntegrityError):
-        make_subscription(make_merchant("D").merchant, plan, ref="sub_D", **_replacement())
+        make_subscription(make_merchant("D").merchant, plan, ref="sub_D", **_replacement(plan))
 
 
 def test_retired_ref_is_unique_when_set_and_null_repeats(make_merchant, make_plan, make_subscription):
@@ -107,9 +114,9 @@ def test_replacement_ref_must_differ_from_the_payment_ref(make_merchant, make_pl
     plan = make_plan()
     with pytest.raises(IntegrityError):
         make_subscription(
-            make_merchant("A").merchant, plan, ref="sub_same", **_replacement(replacement_provider_ref="sub_same")
+            make_merchant("A").merchant, plan, ref="sub_same", **_replacement(plan, replacement_provider_ref="sub_same")
         )
-    make_subscription(make_merchant("B").merchant, plan, ref="sub_B", **_replacement())  # satisfied
+    make_subscription(make_merchant("B").merchant, plan, ref="sub_B", **_replacement(plan))  # satisfied
 
 
 # --- replacement_expiry_set --------------------------------------------------------
@@ -118,11 +125,29 @@ def test_replacement_ref_must_differ_from_the_payment_ref(make_merchant, make_pl
 def test_replacement_expiry_is_set_exactly_when_the_ref_is(make_merchant, make_plan, make_subscription):
     plan = make_plan()
     with pytest.raises(IntegrityError):  # ref without a deadline
-        make_subscription(make_merchant("A").merchant, plan, ref="sub_A", replacement_provider_ref="sub_repl1")
+        make_subscription(make_merchant("A").merchant, plan, ref="sub_A", replacement_provider_ref="sub_repl1", replacement_plan=plan)
     with pytest.raises(IntegrityError):  # a deadline without a ref
         make_subscription(make_merchant("B").merchant, plan, ref="sub_B", replacement_expires_at=_later())
-    make_subscription(make_merchant("C").merchant, plan, ref="sub_C", **_replacement())  # both set
+    make_subscription(make_merchant("C").merchant, plan, ref="sub_C", **_replacement(plan))  # both set
     make_subscription(make_merchant("D").merchant, plan, ref="sub_D")  # both NULL
+
+
+# --- replacement_plan_set (W5 amendment) ---------------------------------------------
+
+
+def test_the_replacement_plan_is_set_exactly_when_the_ref_is(make_merchant, make_plan, make_subscription):
+    plan = make_plan()
+    with pytest.raises(IntegrityError):  # a ref and a deadline, no target plan
+        make_subscription(
+            make_merchant("A").merchant,
+            plan,
+            ref="sub_A",
+            replacement_provider_ref="sub_repl1",
+            replacement_expires_at=_later(),
+        )
+    with pytest.raises(IntegrityError):  # a target plan, no ref
+        make_subscription(make_merchant("B").merchant, plan, ref="sub_B", replacement_plan=plan)
+    make_subscription(make_merchant("C").merchant, plan, ref="sub_C", **_replacement(plan))  # all set
 
 
 # --- replacement_committed_needs_ref -----------------------------------------------
@@ -138,7 +163,7 @@ def test_a_commit_marker_needs_a_replacement_ref(make_merchant, make_plan, make_
         make_merchant("B").merchant,
         plan,
         ref="sub_B",
-        **_replacement(replacement_committed_at=dj_timezone.now()),
+        **_replacement(plan, replacement_committed_at=dj_timezone.now()),
     )
 
 
@@ -177,14 +202,14 @@ def test_a_confirmed_cancel_needs_a_commit_marker(make_merchant, make_plan, make
             make_merchant("A").merchant,
             plan,
             ref="sub_A",
-            **_replacement(replacement_cancel_confirmed_at=dj_timezone.now()),
+            **_replacement(plan, replacement_cancel_confirmed_at=dj_timezone.now()),
         )
     now = dj_timezone.now()
     make_subscription(
         make_merchant("B").merchant,
         plan,
         ref="sub_B",
-        **_replacement(replacement_committed_at=now, replacement_cancel_confirmed_at=now),
+        **_replacement(plan, replacement_committed_at=now, replacement_cancel_confirmed_at=now),
     )
 
 

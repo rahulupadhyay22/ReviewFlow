@@ -27,6 +27,8 @@ class CheckoutRequestSerializer(serializers.Serializer):
     (merchant_id, status, a price) is ignored."""
 
     plan_id = serializers.UUIDField()
+    # Needed only when an upgrade falls back to a replacement (C1); ignored otherwise.
+    acknowledge_no_credit = serializers.BooleanField(required=False, default=False)
 
 
 def subscription_body(overview) -> dict:

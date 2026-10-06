@@ -39,6 +39,11 @@ _HTTP_TIMEOUT = 10  # seconds; the two OWNER endpoints call this under a row loc
 # reviewed change; until then nothing classifies, even with a flag on.
 UPDATE_UNSUPPORTED_REFUSALS: frozenset[tuple[int, str, str]] = frozenset()
 
+# G-2: the entity field a downgrade replacement's start is verified from. It is
+# None until Razorpay's future-start behavior is evidenced, so no downgrade
+# replacement is created (the merged 409 plan_change_unsupported stands).
+DOWNGRADE_START_FIELD: str | None = None
+
 # A `reason` is kept only if it is a short identifier. Free text (a description)
 # never matches, so it cannot be stored or leaked through this field.
 _REASON = re.compile(r"[A-Za-z0-9_.:-]{1,64}")

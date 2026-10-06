@@ -50,7 +50,9 @@ class CheckoutView(APIView):
         serializer = CheckoutRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         result = services.start_checkout(
-            actor=request.team_member, plan_id=serializer.validated_data["plan_id"]
+            actor=request.team_member,
+            plan_id=serializer.validated_data["plan_id"],
+            acknowledge_no_credit=serializer.validated_data["acknowledge_no_credit"],
         )
         overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
         body = {"checkout": result.checkout, "subscription": subscription_body(overview)}
