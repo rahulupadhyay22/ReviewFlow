@@ -43,6 +43,9 @@ UPDATE_UNSUPPORTED_REFUSALS: frozenset[tuple[int, str, str]] = frozenset()
 # None until Razorpay's future-start behavior is evidenced, so no downgrade
 # replacement is created (the merged 409 plan_change_unsupported stands).
 DOWNGRADE_START_FIELD: str | None = None
+# G-2, the same gate for the entity field the replacement's expiry is read from at
+# the commit point. None until evidenced: the commit then fails closed.
+DOWNGRADE_EXPIRY_FIELD: str | None = None
 
 # A `reason` is kept only if it is a short identifier. Free text (a description)
 # never matches, so it cannot be stored or leaked through this field.

@@ -59,7 +59,7 @@ def test_two_sweeps_race_one_switch_and_one_new_usage_period(w, monkeypatch):
     assert state.audits == ["billing.plan_changed"]  # one switch
     assert len(state.payments) == 1  # one ledger entry
     assert len(state.usages) == len(initial.usages) + 1  # one fresh UsageRecord
-    assert (state.replacement_provider_ref, state.retired_kind) == (None, "SWITCHED_OLD")
+    assert (state.replacement_provider_ref, state.retired_kind) == (None, None)  # old cancelled, slot cleared
 
 
 @pytest.mark.parametrize("order", ["switch_first", "past_due_first"])

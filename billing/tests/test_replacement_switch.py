@@ -151,7 +151,8 @@ def test_a_second_run_changes_nothing(w):
         once.usages,
         once.period,
     )
-    assert twice.retired_provider_ref == once.retired_provider_ref
+    # the full sweep's retired step then cancelled the old subscription and cleared the slot
+    assert (once.retired_provider_ref is not None, twice.retired_provider_ref) == (True, None)
 
 
 def test_an_older_main_snapshot_fetched_before_the_switch_is_dropped(w):
@@ -329,8 +330,8 @@ def test_sync_subscription_switches_then_the_main_step_syncs_the_new_ref(w):
     upgrade_setup(w)
     sync(w.a)
     fetched = [c[1] for c in w.provider.calls if c[0] == "fetch_subscription"]
-    assert fetched[0] == REPL_REF  # the replacement first
-    assert fetched[-1] == REPL_REF  # then the main step, which now follows the new ref
+    old_ref = w.ref(w.a)
+    assert fetched == [REPL_REF, REPL_REF, old_ref]  # replacement, then main (the new ref), then retired
     row = sub_row(w.a)
     assert (row.plan_id, row.payment_provider_ref) == (w.big.pk, REPL_REF)
     assert read_state(w.a.merchant).audits == ["billing.plan_changed"]

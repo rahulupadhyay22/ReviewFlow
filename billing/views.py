@@ -68,3 +68,14 @@ class SubscriptionCancelView(APIView):
         services.cancel_subscription(actor=request.team_member)
         overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
         return Response(subscription_body(overview))
+
+
+class ReplacementCancelView(APIView):
+    permission_classes = [IsOwner]
+    throttle_classes = [BillingWriteRateThrottle]
+
+    def post(self, request):
+        # The body is ignored: nothing the client sends reaches the service.
+        services.cancel_replacement(actor=request.team_member)
+        overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
+        return Response(subscription_body(overview))

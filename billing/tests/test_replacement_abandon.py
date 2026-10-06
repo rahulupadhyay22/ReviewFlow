@@ -72,7 +72,7 @@ def setup(w, *, status="ACTIVE", repl_status="halted", paid=False, **repl):
     """A on the small plan with an upgrade replacement the provider reports as
     `repl_status`."""
     w.sub(w.a, status, plan=w.small)
-    set_replacement(w.a.merchant, **repl)
+    set_replacement(w.a.merchant, **{"plan": w.big, **repl})
     provide_replacement(w.provider, w.big, status=repl_status, paid=paid)
     w.provider.entities[w.ref(w.a)] = entity(w.small, status="active", start=START)
 
@@ -128,7 +128,7 @@ def test_an_earlier_provider_update_downgrade_survives_an_upgrade_replacement_ab
     """pending_plan from a provider-update downgrade is not the replacement's
     target, so abandoning an upgrade replacement leaves it in place."""
     w.sub(w.a, "ACTIVE", plan=w.small, pending_plan=w.small)
-    set_replacement(w.a.merchant)
+    set_replacement(w.a.merchant, plan=w.big)
     provide_replacement(w.provider, w.big, status="halted", paid=False)
     sync_replacement(w.a)
     assert sub_row(w.a).pending_plan_id == w.small.pk
@@ -214,11 +214,15 @@ def test_an_unreadable_replacement_under_the_lock_is_left_as_it_is(w, monkeypatc
     assert read_state(w.a.merchant) == before
 
 
-@pytest.mark.parametrize("status", ["pending", "halted", "cancelled", "expired", "created", "authenticated"])
+@pytest.mark.parametrize("status", ["created", "authenticated"])
 def test_a_committed_downgrade_replacement_is_not_abandoned_here(w, status):
-    """W6 owns the committed replacement's lifecycle; W4 must not clear it."""
+    """A committed downgrade replacement is never abandoned to keep the old plan. (One
+    that has FAILED is handled separately, W6: test_replacement_commit.py.) The old
+    cancel is already confirmed here, so the sweep has nothing to re-issue either."""
     w.sub(w.a, "ACTIVE", plan=w.big)
     set_replacement(w.a.merchant, committed=True, downgrade_to=w.small, expires_in=timedelta(minutes=-1))
+    with tenant_context(w.a.merchant.id), tenant_atomic():
+        Subscription.objects.update(replacement_cancel_confirmed_at=services.dj_timezone.now())
     provide_replacement(w.provider, w.small, status=status, paid=False)
     before = read_state(w.a.merchant)
     sync_replacement(w.a)
@@ -339,16 +343,18 @@ def test_a_merchant_cancel_of_a_past_due_row_abandons_a_non_active_replacement(w
         services.cancel_subscription(actor=w.a)
     row = sub_row(w.a)
     assert (row.status, row.retired_provider_ref, row.replacement_provider_ref) == ("CANCELLED", REPL_REF, None)
-    assert read_state(w.a.merchant).audits[-1] == ABANDONED
+    assert read_state(w.a.merchant).audits == [ABANDONED, "billing.cancellation_requested"]  # the replacement goes first
 
 
-def test_a_merchant_cancel_of_a_past_due_row_leaves_an_active_replacement(w):
+def test_a_merchant_cancel_of_a_past_due_row_with_an_active_replacement_is_409_and_changes_nothing(w):
+    """W6: an active replacement is never cancelled, not even by the merchant."""
     setup(w, status="PAST_DUE", repl_status="active", paid=False)
-    with tenant_context(w.a.merchant.id), tenant_atomic():
-        services.cancel_subscription(actor=w.a)
-    row = sub_row(w.a)
-    assert (row.status, row.replacement_provider_ref) == ("CANCELLED", REPL_REF)
-    assert ("cancel_subscription", REPL_REF, False) not in w.provider.calls
+    before = read_state(w.a.merchant)
+    with pytest.raises(ReplacementActivating):
+        with tenant_context(w.a.merchant.id), tenant_atomic():
+            services.cancel_subscription(actor=w.a)
+    assert read_state(w.a.merchant) == before
+    assert provider_writes(w) == []
 
 
 @pytest.mark.parametrize("status", ["PAST_DUE", "CANCELLED", "EXPIRED"])

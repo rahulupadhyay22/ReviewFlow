@@ -10,6 +10,11 @@ urlpatterns = [
         views.SubscriptionCancelView.as_view(),
         name="billing-subscription-cancel",
     ),
+    path(
+        "billing/replacement/cancel",
+        views.ReplacementCancelView.as_view(),
+        name="billing-replacement-cancel",
+    ),
     path("billing/checkout", views.CheckoutView.as_view(), name="billing-checkout"),
     path(
         "billing/webhooks/razorpay",

@@ -475,7 +475,8 @@ executions inside their 7-day window are eligible under the new quota (§E).
      provider (never a webhook) and *verify*: status `authenticated`; plan id
      equals the target's `provider_plan_id`; its start equals the old period
      end (the field to read is gated, G-2); it has not expired and its expiry
-     is not before the boundary; now is before the commit cutoff (old period
+     equals `replacement_expires_at` (the `expire_by` ReviewFlow set, commit cutoff
+     minus 1 second); now is before the commit cutoff (old period
      end minus `BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN`). Any failed check,
      or any field that cannot be read, means no commit. On success record
      `replacement_committed_at` and commit the transaction, so the intent
@@ -880,11 +881,12 @@ applies:
 - `razorpay.DOWNGRADE_START_FIELD` is `None` until G-2 evidence is recorded; W5 only
   checks it for `None` (no downgrade replacement is created while it is), and it makes
   no provider call (P7).
-- OPEN, for W6 (not resolved here): the commit verification asks that the replacement's
-  expiry "is not before the boundary" (old period end), which cannot hold for an
-  `expire_by` that is strictly before the cutoff, itself before the boundary. The spec
-  names only one expiry field, so no distinction can be drawn without inventing provider
-  behavior; it needs a ruling before W6.
+- RESOLVED (approved 2026-10-06, Option A): the W6 commit verification no longer asks
+  that the replacement's expiry be "not before the boundary", which could never hold for
+  an `expire_by` strictly before the cutoff. It asks that the entity's expiry equals
+  `replacement_expires_at`, the `expire_by` ReviewFlow set (commit cutoff minus 1 second),
+  so only local state is compared and no provider behavior is assumed. The G-2 gate, the
+  start-equals-old-period-end check and "now is before the commit cutoff" are unchanged.
 - D1 stays fully out of scope: `fetch_invoices()` stays fail-closed and no provider
   behavior is inferred.
 
