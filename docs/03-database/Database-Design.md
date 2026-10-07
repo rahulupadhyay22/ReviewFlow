@@ -180,8 +180,9 @@ Create/Update Transaction
 **Purpose**: a merchant's current plan and billing-period state. The single source of truth for the merchant's plan.
 **Relationships**: Merchant 1───1 (one row per merchant, reused on resubscribe); Plan *───1 (`plan`, and the optional `pending_plan`).
 **Statuses**: `INCOMPLETE, ACTIVE, PAST_DUE, CANCELLED, EXPIRED`. Only `ACTIVE` is entitled to send. See `../08-billing/Billing-Specification.md` §N.
-**Unique constraints**: `(merchant_id)`; `(payment_provider_ref)` where set.
-**Check constraints**: period fields present unless `INCOMPLETE`; `past_due_at` set if and only if `PAST_DUE`; `dunning_stage` set if and only if `past_due_at` is set, and one of `0, 3, 6`.
+**Unique constraints**: `(merchant_id)`; `(payment_provider_ref)` where set; `(replacement_provider_ref)` where set; `(retired_provider_ref)` where set.
+**Plan-change replacement**: seven nullable columns (`replacement_provider_ref`, `replacement_plan_id`, `replacement_expires_at`, `replacement_committed_at`, `replacement_cancel_confirmed_at`, `retired_provider_ref`, `retired_kind`; migrations 0003 and 0005) hold at most one pending replacement and one subscription awaiting confirmed termination. See `Data-Dictionary.md` and `../08-billing/Billing-Specification.md` §N.
+**Check constraints**: the replacement columns' constraints (see `Data-Dictionary.md`); period fields present unless `INCOMPLETE`; `past_due_at` set if and only if `PAST_DUE`; `dunning_stage` set if and only if `past_due_at` is set, and one of `0, 3, 6`.
 **Concurrency control**: every status, plan or period change is made under a row lock on the `Subscription`; the current `UsageRecord` is locked after it, never before.
 **RLS**: `tenant_isolation`, plus the SELECT-only `billing_ref_lookup` policy used to resolve a payment webhook to its merchant (see `../02-architecture/Multi-Tenancy.md`).
 **Delete behavior**: never deleted.

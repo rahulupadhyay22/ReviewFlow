@@ -22,13 +22,14 @@ intelligence feature, and changes no customer-visible sending behavior.
 existing D2/D3 "replacement subscription" (a new checkout on a `CANCELLED`,
 `EXPIRED` or `INCOMPLETE` row). Those rules are unchanged.
 
-**Status of this spec: DRAFTED FROM THE APPROVED v1-v5 REVIEW (2026-10-05).**
+**Status of this spec: APPROVED; IMPLEMENTED (W0-W6) ON `feature/plan-change-replacement`;
+W7 final review in progress (2026-10-06).**
 The decisions below (C1, C2, C3, the rule changes, the §18 answers Q1-Q6) were
 approved in review before this file was written. Plan Mode has been entered
 and the implementation plan has been reviewed and approved (2026-10-05). The W0
-amendment (2026-10-05) applies the planning-review decisions logged under "W0
-amendment log" at the end of this file; it is drafted but remains uncommitted
-and pending explicit user approval. No implementation code has started. **Both feature flags default to OFF, and no part of this spec grants
+amendment (2026-10-05) applied the planning-review decisions logged under "W0
+amendment log" at the end of this file; it was approved and committed. Workstreams
+W0-W6 are implemented and committed. **Both feature flags default to OFF, and no part of this spec grants
 entitlement until D1 is resolved.** This spec does not claim production
 readiness; every provider-specific assumption is a pre-production gate
 ("Release gates").
@@ -149,7 +150,7 @@ decision is amended silently.
 | 8 | `pending_plan` is a downgrade scheduled at the next provider charge | Also set by a downgrade replacement; applied at the switch | approved |
 | 9 | Checkout error table; `GET /billing/subscription` shape | New codes `replacement_in_progress`, `no_credit_acknowledgement_required`, `replacement_activating`, `replacement_committed`; new `replacement` object | approved |
 | 10 | Quota outcome of an upgrade | A replacement upgrade starts a fresh `UsageRecord` at 0. A provider-update upgrade is unchanged. | approved |
-| 11 | Data Dictionary and audit action list | Six new `Subscription` columns; new audit actions | approved |
+| 11 | Data Dictionary and audit action list | Seven new `Subscription` columns (six in migration 0003, `replacement_plan` in 0005); new audit actions | approved |
 | 12 | Recovery of `PAST_DUE` needs a paid invoice for the current cycle (§K; §N) | A replacement proven paid by D1 proof also recovers it | approved |
 | 13 | Authorized provider subscriptions are not cancelled by the sweep or checkout unless proven unpaid | A replacement the provider reports `active` is never cancelled by ReviewFlow | approved |
 | 14 | An abandon never changes entitlement | Holds for every failure before the commit point. After the commit point a downgrade can't be abandoned to keep the old plan. | approved |
@@ -166,7 +167,7 @@ rules; Razorpay only through `billing/razorpay.py`.
 
 ## Django apps
 - `billing` — touched (models, services, views, serializers, urls,
-  exceptions, `razorpay.py`, migrations 0003 and 0004, tests)
+  exceptions, `razorpay.py`, migrations 0003, 0004 and 0005, tests)
 - `core` — touched (`core/rls.py` helper for the two-column lookup policy;
   `core/tenancy.py` only if the lookup guard text must name both columns)
 - `config` — touched (settings)
@@ -216,6 +217,8 @@ columns):**
 - `replacement_confirmed_needs_committed` — check:
   `replacement_cancel_confirmed_at IS NULL OR replacement_committed_at IS NOT
   NULL`
+- `replacement_plan_set` — check (migration 0005):
+  `(replacement_provider_ref IS NULL) = (replacement_plan IS NULL)`
 - The existing constraints, `UNIQUE(merchant)` and
   `billing_subscription_ref_uniq`, are unchanged. Idempotency of replacement
   creation rests on `UNIQUE(merchant)` plus the nullability of
@@ -232,14 +235,14 @@ the single-column policy. `core/rls.py::rls_select_by_billing_ref` gains a
 unchanged); a replace helper issues `DROP POLICY` then `CREATE POLICY` in
 one migration.
 
-**Tenant scoping:** all six columns are on an RLS table that is already
+**Tenant scoping:** all seven columns are on an RLS table that is already
 ENABLED and FORCED with `tenant_isolation`. No new table. No `BYPASSRLS`.
 `SubscriptionManager.for_lookup_ref(ref)` filters on either column and keeps
 its guard (it works only inside `billing_ref_lookup_atomic()` for the same
 ref).
 
 Neither migration deletes or rewrites existing data. Both are reversible;
-reversing 0003 drops the six columns and therefore discards any replacement or
+reversing 0003 and 0005 drops the seven columns and therefore discards any replacement or
 retired data held in them (stated in the migration docstring; the round-trip
 test runs with those columns empty).
 
@@ -271,6 +274,10 @@ the POSTs.
   committed, effective_at } | null`, where `authorized` is derived as equal to
   `committed` (no replacement status is persisted). Read-only; no provider call. OWNER and
   ADMIN, as today. The replacement ref and the retired ref are never exposed.
+  `kind` is the price comparison of the target against the row's plan; `committed` is
+  `replacement_committed_at`; `effective_at` is the old `current_period_end` for a
+  downgrade and `null` for an upgrade (W7 interpretation: the spec named the field but
+  not its value; an upgrade has no scheduled instant, it takes effect when proven paid).
 - API keys get 403 on every billing endpoint, as today. No new webhook URL:
   the existing signed receiver also matches the replacement ref.
 
@@ -445,8 +452,10 @@ old period end a row without proof is not entitled (fail closed). No grace.
 - **Audit rows:** `billing.plan_changed` (effective `REPLACEMENT_IMMEDIATE` or
   `REPLACEMENT_SCHEDULED`; an upgrade also records that the acknowledgement was
   given), `billing.replacement_started`, `billing.replacement_abandoned`,
-  `billing.replacement_committed`, and `billing.subscription_recovered` when a
-  `PAST_DUE` row recovers. Metadata holds plan names and effect only: no refs,
+  `billing.replacement_committed`, `billing.replacement_paid_after_end` (the staff
+  event of row 16: a paid `active` replacement on a `CANCELLED`/`EXPIRED` row, written
+  once), and `billing.subscription_recovered` when a `PAST_DUE` row recovers.
+  Metadata holds plan names, the plan id, and the kind or effect only: no provider refs,
   payment ids, PII or secrets.
 - ReviewFlow computes no proration, credit or refund.
 
@@ -474,7 +483,8 @@ executions inside their 7-day window are eligible under the new quota (§E).
   1. **T1 (DB transaction):** lock, then re-fetch the replacement from the
      provider (never a webhook) and *verify*: status `authenticated`; plan id
      equals the target's `provider_plan_id`; its start equals the old period
-     end (the field to read is gated, G-2); it has not expired and its expiry
+     end (the field to read is gated, G-2; so is the field the expiry is read from,
+     `razorpay.DOWNGRADE_EXPIRY_FIELD`, also `None` until evidenced); it has not expired and its expiry
      equals `replacement_expires_at` (the `expire_by` ReviewFlow set, commit cutoff
      minus 1 second); now is before the commit cutoff (old period
      end minus `BILLING_REPLACEMENT_DOWNGRADE_EXPIRE_MARGIN`). Any failed check,
@@ -576,7 +586,7 @@ No admin changes. `Plan` stays the only registered billing model; the new
 columns are not editable anywhere.
 
 ## Files to change
-- `billing/models.py` — six columns, constraints, `for_lookup_ref` matches
+- `billing/models.py` — seven columns, constraints, `for_lookup_ref` matches
   either ref
 - `billing/services.py` — classifier, replacement start, commit, switch,
   abandon, cancel; extensions to `start_checkout`, `_apply_snapshot`,
@@ -608,6 +618,7 @@ columns are not editable anywhere.
 ## Files to create
 - `billing/migrations/0003_subscription_replacement.py`
 - `billing/migrations/0004_billing_ref_lookup_replacement.py`
+- `billing/migrations/0005_subscription_replacement_plan.py` (W5 amendment: `replacement_plan`)
 - `billing/tests/replacement_helpers.py` (plain helpers; no test module imports
   another)
 - `billing/tests/test_replacement_services.py`,
@@ -616,6 +627,11 @@ columns are not editable anywhere.
   `test_replacement_rls.py`, `test_replacement_webhook.py`,
   `test_replacement_races.py` (real threads), `test_replacement_flags.py`,
   `test_replacement_permissions.py`, `test_replacement_log_hygiene.py`
+  (As built, the same coverage lives in `test_replacement_models.py`, `_fake_provider.py`,
+  `_provider.py`, `_sync.py`, `_switch.py`, `_abandon.py`, `_commit.py`,
+  `_commit_concurrency.py`, `_retired.py`, `_cancel.py`, `_api.py`, `_flags.py`, `_rls.py`,
+  `_races.py` and `_services.py`; permissions and log-hygiene assertions sit inside
+  the API, cancel, commit, retired and abandon files.)
 
 ## New dependencies
 No new dependencies.
@@ -686,8 +702,8 @@ All verifiable with `pytest` on real PostgreSQL unless noted. Razorpay is
 mocked at `billing/razorpay.py` (`FakeProvider`).
 
 **Models, migrations, RLS**
-- [ ] `python manage.py migrate` applies `billing` 0003 and 0004, and
-      `migrate billing 0002` reverses them (data in the six new columns is
+- [ ] `python manage.py migrate` applies `billing` 0003, 0004 and 0005, and
+      `migrate billing 0002` reverses them (data in the seven new columns is
       discarded; the test runs with them empty); `makemigrations --check
       --dry-run` is clean
 - [ ] Each new constraint has a test that violates it and one that satisfies it
@@ -841,7 +857,7 @@ mocked at `billing/razorpay.py` (`FakeProvider`).
   `07-billing-maintenance-monitoring`)
 
 ## W0 amendment log
-Amendment of 2026-10-05 (uncommitted, for review). Each change and the approval it
+Amendment of 2026-10-05 (approved and committed). Each change and the approval it
 applies:
 - Six columns, not four: `retired_kind` and `replacement_cancel_confirmed_at`, with
   two more constraints (planning review, "Add both columns").
@@ -887,6 +903,9 @@ applies:
   `replacement_expires_at`, the `expire_by` ReviewFlow set (commit cutoff minus 1 second),
   so only local state is compared and no provider behavior is assumed. The G-2 gate, the
   start-equals-old-period-end check and "now is before the commit cutoff" are unchanged.
+- W7: the `GET /billing/subscription` `replacement` member is implemented as described
+  under "API endpoints"; `effective_at` (not defined by the spec until now) is the old
+  period end for a downgrade and `null` for an upgrade.
 - D1 stays fully out of scope: `fetch_invoices()` stays fail-closed and no provider
   behavior is inferred.
 

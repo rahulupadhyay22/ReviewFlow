@@ -1563,6 +1563,9 @@ class SubscriptionOverview:
     grace_ends_at: datetime | None
     checkout: dict | None
     next_action: dict
+    # The pending plan-change replacement, local state only: {plan, kind, committed,
+    # effective_at}, or None. Never a provider reference.
+    replacement: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -1626,6 +1629,25 @@ def _next_action(subscription: Subscription | None, grace_ends_at) -> dict:
     return {"type": "RENEWAL", "at": subscription.current_period_end}
 
 
+def _replacement_view(subscription: Subscription | None) -> dict | None:
+    """The GET /billing/subscription `replacement` member, from local columns only (no
+    provider call, no reference). `kind` is the price comparison (a replacement is only
+    ever created for a different-priced plan); `committed` is replacement_committed_at,
+    and the API's `authorized` is derived as equal to it (no replacement status is
+    persisted). `effective_at` is the old period end for a downgrade, the instant it
+    takes over, and None for an upgrade, which takes effect when it is proven paid."""
+    if subscription is None or subscription.replacement_provider_ref is None:
+        return None
+    target = subscription.replacement_plan
+    downgrade = target.monthly_price < subscription.plan.monthly_price
+    return {
+        "plan": target,
+        "kind": "DOWNGRADE" if downgrade else "UPGRADE",
+        "committed": subscription.replacement_committed_at is not None,
+        "effective_at": subscription.current_period_end if downgrade else None,
+    }
+
+
 def get_subscription_overview(*, role: str) -> SubscriptionOverview:
     """Reads local state only; it never calls the provider. The `checkout`
     object is decided here, by role: only an OWNER gets it, because those
@@ -1633,7 +1655,7 @@ def get_subscription_overview(*, role: str) -> SubscriptionOverview:
     and changing billing is OWNER-only."""
     _merchant_id()
     with tenant_atomic():
-        subscription = Subscription.objects.select_related("plan", "pending_plan").first()
+        subscription = Subscription.objects.select_related("plan", "pending_plan", "replacement_plan").first()
         entitlement = get_entitlement()
     S = Subscription.Status
     grace_ends_at = (
@@ -1653,6 +1675,7 @@ def get_subscription_overview(*, role: str) -> SubscriptionOverview:
         grace_ends_at=grace_ends_at,
         checkout=checkout,
         next_action=_next_action(subscription, grace_ends_at),
+        replacement=_replacement_view(subscription),
     )
 
 

@@ -19,6 +19,7 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 - WhatsApp sender changed (own number ↔ shared pool)
 - Google connection added / reauthorized
 - Billing plan changed; checkout started; cancellation requested
+- Plan-change replacement started, committed (downgrade) or abandoned (`billing.replacement_started`, `billing.replacement_committed`, `billing.replacement_abandoned`); and, for staff, a paid replacement on an ended subscription (`billing.replacement_paid_after_end`, system event, written once). Metadata holds plan names, the plan id and the kind or effect only: never a provider reference, payment id or PII
 - Subscription state changed (activated, past due, recovered, cancelled, expired) and each dunning checkpoint reached — system events with no actor
 - API key created / revoked
 
