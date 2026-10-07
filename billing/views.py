@@ -50,7 +50,9 @@ class CheckoutView(APIView):
         serializer = CheckoutRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         result = services.start_checkout(
-            actor=request.team_member, plan_id=serializer.validated_data["plan_id"]
+            actor=request.team_member,
+            plan_id=serializer.validated_data["plan_id"],
+            acknowledge_no_credit=serializer.validated_data["acknowledge_no_credit"],
         )
         overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
         body = {"checkout": result.checkout, "subscription": subscription_body(overview)}
@@ -64,5 +66,16 @@ class SubscriptionCancelView(APIView):
     def post(self, request):
         # The body is ignored: nothing the client sends reaches the service.
         services.cancel_subscription(actor=request.team_member)
+        overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
+        return Response(subscription_body(overview))
+
+
+class ReplacementCancelView(APIView):
+    permission_classes = [IsOwner]
+    throttle_classes = [BillingWriteRateThrottle]
+
+    def post(self, request):
+        # The body is ignored: nothing the client sends reaches the service.
+        services.cancel_replacement(actor=request.team_member)
         overview = services.get_subscription_overview(role=TeamMember.Role.OWNER)
         return Response(subscription_body(overview))

@@ -90,19 +90,45 @@ def rls_select_by_integration_id(table, column="id"):
 CURRENT_BILLING_REF = "NULLIF(current_setting('app.current_billing_ref', true), '')"
 
 
-def rls_select_by_billing_ref(table, column="payment_provider_ref"):
+def _billing_ref_predicate(columns):
+    return " OR ".join(f"{column} = {CURRENT_BILLING_REF}" for column in columns)
+
+
+def rls_select_by_billing_ref(table, column="payment_provider_ref", columns=None):
     """SELECT-only billing_ref_lookup policy (pre-tenant Razorpay webhook
     Subscription lookup, see core.tenancy.billing_ref_lookup_atomic). Run
     after rls_direct(), which enables and forces RLS. Never add a write
     policy keyed on app.current_billing_ref. Signed off 2026-09-30
     (spec 07 Change 1 -- LOCKED DECISION CHANGE).
+
+    `columns` (spec 07-plan-change-replacement) matches any of several ref
+    columns; it defaults to `(column,)`, so migration 0002 is unchanged.
     """
+    predicate = _billing_ref_predicate(columns or (column,))
     return migrations.RunSQL(
-        sql=(
-            f"CREATE POLICY billing_ref_lookup ON {table} FOR SELECT "
-            f"USING ({column} = {CURRENT_BILLING_REF});"
-        ),
+        sql=f"CREATE POLICY billing_ref_lookup ON {table} FOR SELECT USING ({predicate});",
         reverse_sql=f"DROP POLICY billing_ref_lookup ON {table};",
+    )
+
+
+def rls_replace_select_by_billing_ref(table, *, old_columns, new_columns):
+    """Replaces the SELECT-only billing_ref_lookup policy (DROP then CREATE, in
+    the migration's own transaction) so it matches `new_columns`; the reverse
+    restores `old_columns`. Still SELECT-only: no write policy is keyed on
+    app.current_billing_ref (spec 07-plan-change-replacement, LOCKED DECISION
+    CHANGE, approved 2026-10-05; formal sign-off at PR time).
+    """
+    drop = f"DROP POLICY billing_ref_lookup ON {table};"
+
+    def create(columns):
+        return (
+            f"CREATE POLICY billing_ref_lookup ON {table} FOR SELECT "
+            f"USING ({_billing_ref_predicate(columns)});"
+        )
+
+    return migrations.RunSQL(
+        sql=[drop, create(new_columns)],
+        reverse_sql=[drop, create(old_columns)],
     )
 
 

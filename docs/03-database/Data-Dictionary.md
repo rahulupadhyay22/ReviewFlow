@@ -297,8 +297,15 @@ One row per merchant, reused when the merchant resubscribes. `Subscription.plan`
 | cancel_at_period_end | bool | No | default false. The merchant asked to cancel; still `ACTIVE` until the period ends |
 | provider_status | string | Yes | the Razorpay status last applied (`created`, `active`, `halted`, ...). It never grants entitlement on its own |
 | provider_synced_at | datetime | Yes | start time of the provider fetch last applied; guards against applying a stale fetch |
+| replacement_provider_ref | string | Yes | the plan-change replacement's Razorpay subscription id (`sub_...`); unique where set; differs from `payment_provider_ref`. See `../08-billing/Billing-Specification.md` §N "Plan-change replacement" |
+| replacement_plan_id | FK → Plan | Yes | the plan the pending replacement is for; set if and only if `replacement_provider_ref` is set |
+| replacement_expires_at | datetime | Yes | the authorization deadline (the `expire_by` ReviewFlow sent); set if and only if `replacement_provider_ref` is set |
+| replacement_committed_at | datetime | Yes | the downgrade commit-intent marker, set only by the downgrade commit step; requires `replacement_provider_ref`. It is the exact discriminator of a committed downgrade replacement |
+| replacement_cancel_confirmed_at | datetime | Yes | set when the old subscription's cycle-end cancel was confirmed; requires `replacement_committed_at` |
+| retired_provider_ref | string | Yes | the one subscription awaiting confirmed termination (the old subscription after a switch, or an abandoned replacement); unique where set |
+| retired_kind | enum | Yes | `SWITCHED_OLD` or `ABANDONED_REPLACEMENT`; set if and only if `retired_provider_ref` is set. The two kinds are cancelled under different rules |
 
-**Constraints**: `UNIQUE(merchant_id)`; `UNIQUE(payment_provider_ref)` where set; both period fields non-null unless `status = INCOMPLETE`; `current_period_end > current_period_start`; `(status = PAST_DUE) = (past_due_at IS NOT NULL)`; `(dunning_stage IS NULL) = (past_due_at IS NULL)`; `dunning_stage IN (0, 3, 6)`.
+**Constraints**: `UNIQUE(merchant_id)`; `UNIQUE(payment_provider_ref)` where set; both period fields non-null unless `status = INCOMPLETE`; `current_period_end > current_period_start`; `(status = PAST_DUE) = (past_due_at IS NOT NULL)`; `(dunning_stage IS NULL) = (past_due_at IS NULL)`; `dunning_stage IN (0, 3, 6)`; replacement columns: `UNIQUE(replacement_provider_ref)` and `UNIQUE(retired_provider_ref)` where set, `replacement_provider_ref <> payment_provider_ref`, `(replacement_provider_ref IS NULL) = (replacement_expires_at IS NULL) = (replacement_plan_id IS NULL)`, a commit marker needs a replacement ref, a confirmed cancel needs a commit marker, and `(retired_provider_ref IS NULL) = (retired_kind IS NULL)`.
 
 See `../08-billing/Billing-Specification.md` §N for the state machine and the paid-entitlement rule.
 

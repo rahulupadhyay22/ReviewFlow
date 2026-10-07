@@ -13,6 +13,7 @@ import hmac
 import http.client
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 
@@ -30,6 +31,26 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.razorpay.com"
 _HTTP_TIMEOUT = 10  # seconds; the two OWNER endpoints call this under a row lock
 
+# G-0 (spec 07-plan-change-replacement): the refusals that mean "this subscription
+# cannot be updated" (UPI, eMandate, domestic card), as (HTTP status,
+# provider error code, reason). It ships EMPTY on purpose: Razorpay's refusal for
+# an unsupported update is not evidenced, and the generic BAD_REQUEST_ERROR is
+# shared by many refusals. Entries are added only from recorded evidence, in a
+# reviewed change; until then nothing classifies, even with a flag on.
+UPDATE_UNSUPPORTED_REFUSALS: frozenset[tuple[int, str, str]] = frozenset()
+
+# G-2: the entity field a downgrade replacement's start is verified from. It is
+# None until Razorpay's future-start behavior is evidenced, so no downgrade
+# replacement is created (the merged 409 plan_change_unsupported stands).
+DOWNGRADE_START_FIELD: str | None = None
+# G-2, the same gate for the entity field the replacement's expiry is read from at
+# the commit point. None until evidenced: the commit then fails closed.
+DOWNGRADE_EXPIRY_FIELD: str | None = None
+
+# A `reason` is kept only if it is a short identifier. Free text (a description)
+# never matches, so it cannot be stored or leaked through this field.
+_REASON = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
 
 def _check_ref(ref: str) -> str:
     # The ref goes into a URL path: refuse anything that is not an id.
@@ -45,6 +66,15 @@ def _provider_error_code(body: bytes) -> str | None:
     except (ValueError, TypeError, KeyError):
         return None
     return code if isinstance(code, str) and len(code) <= 64 else None
+
+
+def _provider_error_reason(body: bytes) -> str | None:
+    """The error's short `reason` identifier, or None. Never the description."""
+    try:
+        reason = json.loads(body)["error"]["reason"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    return reason if isinstance(reason, str) and _REASON.fullmatch(reason) else None
 
 
 def _request(method: str, path: str, body: dict | None = None, *, operation: str) -> dict:
@@ -72,7 +102,11 @@ def _request(method: str, path: str, body: dict | None = None, *, operation: str
             error_body = b""
         logger.warning("Razorpay %s answered %s", operation, status)
         if 400 <= status < 500:
-            raise BillingProviderRejected(_provider_error_code(error_body)) from None
+            raise BillingProviderRejected(
+                _provider_error_code(error_body),
+                status=status,
+                reason=_provider_error_reason(error_body),
+            ) from None
         raise BillingProviderUnavailable() from None
     # http.client.HTTPException (e.g. IncompleteRead) is not an OSError.
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
@@ -98,20 +132,32 @@ def verify_webhook_signature(raw_body: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(expected.encode(), signature.encode("utf-8", "replace"))
 
 
-def create_subscription(provider_plan_id: str) -> dict:
+def _unix_time(name: str, value: int) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} must be a positive unix timestamp.")
+    return value
+
+
+def create_subscription(
+    provider_plan_id: str, *, start_at: int | None = None, expire_by: int | None = None
+) -> dict:
     """No open-ended subscription exists: total_count is required, and 1200
     monthly cycles is 100 years, Razorpay's maximum (V1; T2 unconfirmed, so it
-    is a setting). Sends no notes: nothing about the merchant reaches Razorpay."""
-    return _request(
-        "POST",
-        "/v1/subscriptions",
-        {
-            "plan_id": provider_plan_id,
-            "total_count": settings.RAZORPAY_SUBSCRIPTION_TOTAL_COUNT,
-            "customer_notify": True,
-        },
-        operation="create_subscription",
-    )
+    is a setting). Sends no notes: nothing about the merchant reaches Razorpay.
+
+    `start_at` and `expire_by` (the documented create fields, V1) are sent only
+    when given, so a plain create's body is exactly what it always was. What
+    Razorpay does with them is not verified (G-1, G-2, G-3)."""
+    body = {
+        "plan_id": provider_plan_id,
+        "total_count": settings.RAZORPAY_SUBSCRIPTION_TOTAL_COUNT,
+        "customer_notify": True,
+    }
+    if start_at is not None:
+        body["start_at"] = _unix_time("start_at", start_at)
+    if expire_by is not None:
+        body["expire_by"] = _unix_time("expire_by", expire_by)
+    return _request("POST", "/v1/subscriptions", body, operation="create_subscription")
 
 
 def fetch_subscription(ref: str) -> dict:

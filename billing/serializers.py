@@ -27,6 +27,21 @@ class CheckoutRequestSerializer(serializers.Serializer):
     (merchant_id, status, a price) is ignored."""
 
     plan_id = serializers.UUIDField()
+    # Needed only when an upgrade falls back to a replacement (C1); ignored otherwise.
+    acknowledge_no_credit = serializers.BooleanField(required=False, default=False)
+
+
+def _replacement_body(replacement) -> dict | None:
+    """`authorized` equals `committed` (spec P2). No provider reference is ever shown."""
+    if replacement is None:
+        return None
+    return {
+        "target_plan": {"id": str(replacement["plan"].pk), "name": replacement["plan"].name},
+        "kind": replacement["kind"],
+        "authorized": replacement["committed"],
+        "committed": replacement["committed"],
+        "effective_at": _dt(replacement["effective_at"]),
+    }
 
 
 def subscription_body(overview) -> dict:
@@ -59,4 +74,5 @@ def subscription_body(overview) -> dict:
         "can_send": entitlement.can_send,
         "checkout": overview.checkout,
         "next_action": {"type": next_action["type"], "at": _dt(next_action["at"])},
+        "replacement": _replacement_body(overview.replacement),
     }

@@ -16,12 +16,24 @@ class BillingProviderUnavailable(ReviewFlowError):
 
 
 class BillingProviderRejected(ReviewFlowError):
-    """Razorpay answered 4xx. Carries the provider's error code only (never
-    the description or body). No HTTP mapping of its own: callers translate
+    """Razorpay answered 4xx. Carries the provider's error code, the HTTP
+    status and a short sanitised `reason` (never the description or body). The
+    status and reason exist only so a refusal can be classified
+    (billing.services.is_update_unsupported_refusal, spec
+    07-plan-change-replacement): they are excluded from `__str__`, logs, audit
+    metadata and every response. No HTTP mapping of its own: callers translate
     it (e.g. a refused plan update becomes PlanChangeUnsupported)."""
 
-    def __init__(self, provider_code: str | None = None):
+    def __init__(
+        self,
+        provider_code: str | None = None,
+        *,
+        status: int | None = None,
+        reason: str | None = None,
+    ):
         self.provider_code = provider_code
+        self.status = status
+        self.reason = reason
         super().__init__("The payment provider refused the request.")
 
 
@@ -133,6 +145,50 @@ class SubscriptionPlanUnsupported(ReviewFlowError):
 
     def __init__(self):
         super().__init__("The payment provider subscription uses a plan ReviewFlow does not offer. Contact support.")
+
+
+class ReplacementInProgress(ReviewFlowError):
+    """A plan-change replacement is already pending (any other plan, including
+    the current one), or the retired slot is still occupied."""
+
+    http_status = 409
+    code = "replacement_in_progress"
+
+    def __init__(self):
+        super().__init__("A plan change is already in progress.")
+
+
+class NoCreditAcknowledgementRequired(ReviewFlowError):
+    """A replacement upgrade forfeits the old plan's unused paid time, so the
+    OWNER must acknowledge it. Nothing has changed when this is raised."""
+
+    http_status = 422
+    code = "no_credit_acknowledgement_required"
+
+    def __init__(self):
+        super().__init__("Acknowledge that unused time on the current plan is not credited.")
+
+
+class ReplacementActivating(ReviewFlowError):
+    """The provider reports the replacement `active`: ReviewFlow never cancels
+    it. Nothing is changed."""
+
+    http_status = 409
+    code = "replacement_activating"
+
+    def __init__(self):
+        super().__init__("The new plan is being activated.")
+
+
+class ReplacementCommitted(ReviewFlowError):
+    """A committed downgrade replacement cannot be abandoned to keep the old
+    plan. Nothing is changed."""
+
+    http_status = 409
+    code = "replacement_committed"
+
+    def __init__(self):
+        super().__init__("The plan change can no longer be undone.")
 
 
 class PlanUnchanged(ReviewFlowError):
