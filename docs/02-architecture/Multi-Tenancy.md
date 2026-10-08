@@ -63,6 +63,25 @@ Razorpay sends every billing webhook to one account-level URL. The request carri
 - The application layer mirrors it: `Subscription.objects.for_lookup_ref(ref)` is the only merchant-unscoped `Subscription` read, and works only inside `billing_ref_lookup_atomic()` for that same ref.
 - After the lookup, the merchant context is set from `Subscription.merchant_id` and the `BillingEvent` is written under `tenant_isolation` as usual. `BillingEvent.merchant_id` is resolved before the row is created and is never null.
 
+#### Shared WhatsApp sender — `SHARED_POOL` visibility and platform write (signed off 2026-10-07, Phase 08 spec Change 1)
+
+`whatsapp_whatsappaccount` holds merchant-owned `OWN_NUMBER` rows and the platform's single `SHARED_POOL` row, whose `merchant_id` is NULL. One symmetric `tenant_isolation` policy cannot serve it, so the table has six PERMISSIVE policies, one command each (a policy takes one command, and `FOR INSERT` takes only `WITH CHECK`):
+
+| Policy | Command | Rule |
+|---|---|---|
+| `tenant_read` | SELECT | own rows, or `merchant_id IS NULL` |
+| `tenant_insert` | INSERT | own merchant and `sender_type = 'OWN_NUMBER'` |
+| `tenant_update` | UPDATE | own rows; the result must still be an own `OWN_NUMBER` row (a tenant cannot turn its row into a shared one) |
+| `tenant_delete` | DELETE | own rows |
+| `platform_insert` | INSERT | `merchant_id IS NULL`, `SHARED_POOL`, and `app.platform_write = 'whatsapp_shared_pool'` |
+| `platform_update` | UPDATE | same predicate, as `USING` and `WITH CHECK` |
+
+- `app.platform_write` is set only by `SET LOCAL` inside `core.tenancy.platform_write_atomic(scope)`: transaction-local, fail-closed when unset, scope-allowlisted, refused while a merchant context is active (PERMISSIVE policies are ORed), and always its own outermost (`durable=True`) transaction.
+- It is management infrastructure only: its sole caller is `whatsapp.services.upsert_shared_pool_account`, itself called only by the `configure_shared_pool` command and `seed_dev`. It is never used from a view, serializer, tenant service, task or admin, and there is no API path that creates the shared row.
+- There is no platform DELETE policy, so the shared row can never be deleted.
+- The write is audited: `auditlog_auditlog` gains one INSERT-only policy, `platform_insert` (`merchant_id IS NULL` and `app.platform_write` set), used by `auditlog.services.record_platform`. No SELECT, UPDATE or DELETE policy is added, so platform audit rows stay invisible to tenants and immutable. The existing `tenant_isolation` policy is unchanged.
+- Unchanged: the `NOSUPERUSER NOBYPASSRLS` application role, `FORCE ROW LEVEL SECURITY`, and the four lookup policies above. No `SECURITY DEFINER` function is used.
+
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.

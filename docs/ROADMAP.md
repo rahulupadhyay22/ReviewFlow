@@ -41,7 +41,7 @@ several specs if it is too large for one branch.
 | 12 | Customer feedback                         | 10                 | Not started |
 | 13 | QR codes                                  | 03, 09, 12         | Not started |
 | 14 | Dashboard & analytics                     | 09, 11, 13         | Not started |
-| 15 | Privacy, retention & deletion             | 02, 04, 08, 09, 12 | Not started |
+| 15 | Privacy, retention & deletion             | 02, 04, 08, 09, 11, 12 | Not started |
 | 16 | Internal admin (Django Admin)             | 02, 04             | Not started |
 | 17 | Phased integrations                       | 04                 | Not started |
 | 18 | Pre-launch security hardening             | 00–17              | Not started |
@@ -160,11 +160,16 @@ Source: `08-billing/Billing-Specification.md`,
   `WhatsAppLocationMapping`
 - `MessageTemplate` + approval polling
 - `WhatsAppProvider` interface, `MetaCloudProvider`
-- `WhatsAppMessage`; status and inbound webhooks; opt-out
-- Embedded Signup; per-merchant send-rate cap; shared-number
-  quality monitoring
+- Inbound webhook; opt-out (`WhatsAppMessage` and status-webhook
+  persistence moved to Phase 11)
+- Embedded Signup; shared-number quality monitoring (the per-merchant
+  send-rate cap moved to Phase 11)
 - Extend the seed command with the `SHARED_POOL` `WhatsAppAccount`
   fixture
+
+Phase 08 is split into two specs: `08-whatsapp-foundation` (shared
+number, templates, provider, opt-out, quality monitoring, seed) and
+`08-whatsapp-embedded-signup` (the `OWN_NUMBER` path).
 
 Source: `06-automation/WhatsApp-Architecture.md`,
 `01-product/User-Flows.md` §2.
@@ -206,6 +211,11 @@ Source: `06-automation/Campaign-Engine.md`,
 - Refund cancellation before reservation
 - `QUOTA_EXCEEDED` 7-day expiry and automatic resume
 - Subscription state gate
+- `WhatsAppMessage` model and persistence of status notifications from the
+  single `/webhooks/whatsapp` endpoint (moved from Phase 08, spec
+  `08-whatsapp-foundation`)
+- Per-merchant WhatsApp send-rate cap (`09-security/Security-Controls.md`;
+  moved from Phase 08, spec `08-whatsapp-foundation` OD-6)
 - Refund/void ingestion: a normalized refund event, the `Transaction.status`
   update path, Shopify `refunds/create`, and `/sales` refunds (deferred here
   from Phase 04 Decision 16 and Phase 06 Decision 12 — Phase 06 writes only

@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "events",
     "apikeys",
     "billing",
+    "whatsapp",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -120,6 +121,9 @@ REST_FRAMEWORK = {
         "webhook_ip": env("WEBHOOK_IP_RATE", default="1200/min"),
         # Billing mutations (spec 07 O16): checkout and cancel, per user.
         "billing_write": env("BILLING_WRITE_RATE", default="10/min"),
+        # WhatsApp template creation, per user (spec 08 code review): every
+        # template is submitted to the one shared Meta WABA.
+        "whatsapp_template_write": env("WHATSAPP_TEMPLATE_WRITE_RATE", default="10/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
@@ -231,3 +235,31 @@ if SHOPIFY_REDIRECT_URI:
     SHOPIFY_WEBHOOK_BASE = f"https://{_shopify_redirect_parts.netloc}"
 else:
     SHOPIFY_WEBHOOK_BASE = ""
+
+# WhatsApp / Meta (spec 08-whatsapp-foundation). Platform secrets only: never
+# stored in the database, logged, audited or returned. Empty defaults fail
+# closed: the inbound webhook answers 401/403 and template creation 503.
+META_APP_SECRET = env("META_APP_SECRET", default="")
+META_WEBHOOK_VERIFY_TOKEN = env("META_WEBHOOK_VERIFY_TOKEN", default="")
+META_SHARED_POOL_ACCESS_TOKEN = env("META_SHARED_POOL_ACCESS_TOKEN", default="")
+# Gate M-7 (docs/05-integrations/WhatsApp-Meta.md): the latest Graph API version
+# when verified (2026-10-07). Meta's own WhatsApp doc examples pin older ones.
+META_GRAPH_API_VERSION = env("META_GRAPH_API_VERSION", default="v26.0")
+WHATSAPP_TEMPLATE_POLL_SECONDS = env.float("WHATSAPP_TEMPLATE_POLL_SECONDS", default=900.0)
+WHATSAPP_QUALITY_POLL_SECONDS = env.float("WHATSAPP_QUALITY_POLL_SECONDS", default=3600.0)
+# Spec 08 OD-3/OD-4/OD-5 proposals; confirmed or changed before release.
+WHATSAPP_QUALITY_ALERT_RATINGS = frozenset({"YELLOW", "RED"})
+WHATSAPP_OPT_OUT_KEYWORDS = frozenset({"STOP", "UNSUBSCRIBE"})
+WHATSAPP_TEMPLATE_LANGUAGES = frozenset({"en", "en_US", "hi"})
+# Conservative: Meta allows 1024 characters with other components (gate M-5).
+WHATSAPP_TEMPLATE_BODY_MAX = 1024
+CELERY_BEAT_SCHEDULE["whatsapp-template-status"] = {
+    "task": "whatsapp.tasks.poll_template_statuses",
+    "schedule": WHATSAPP_TEMPLATE_POLL_SECONDS,
+    "options": {"queue": "default"},
+}
+CELERY_BEAT_SCHEDULE["whatsapp-shared-pool-quality"] = {
+    "task": "whatsapp.tasks.monitor_shared_pool_quality",
+    "schedule": WHATSAPP_QUALITY_POLL_SECONDS,
+    "options": {"queue": "default"},
+}

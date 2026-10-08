@@ -125,6 +125,48 @@ Location body: `{ id, name, address, phone, timezone, is_active, created_at, upd
 
 ---
 
+## WhatsApp *(spec 08-whatsapp-foundation; approved 2026-10-07)*
+
+Session auth + CSRF only. Provider identifiers (`phone_number_id`, `business_account_id`) are never returned. Sender body: `{ id, sender_type, status }`.
+
+### `GET /whatsapp/senders`
+- **Permissions**: any role
+- **Response**: `200 { results: [Sender], next_cursor }`. The merchant's own `OWN_NUMBER` accounts plus the shared account when it is `ACTIVE`.
+
+### `GET /locations/{id}/whatsapp-sender`
+- **Permissions**: any role; a MANAGER gets `404` for an unassigned location, as for `GET /locations/{id}`
+- **Response**: `200 { sender: Sender | null }`
+
+### `PUT /locations/{id}/whatsapp-sender`
+- **Permissions**: OWNER, ADMIN, or a MANAGER assigned to the location
+- **Request**: `{ whatsapp_account_id }`
+- **Response**: `200 { sender }`. Idempotent: repointing to the same account changes and audits nothing. A change writes `whatsapp.sender_changed` (`from_sender_type`, `to_sender_type` only).
+- **Errors**: `404` unknown/foreign location, or an account id that does not exist or is not visible to the caller (another merchant's `OWN_NUMBER`); `422` a `PENDING` or `SUSPENDED` account the caller can see by id (its own `OWN_NUMBER`, or the shared account), or an account that cannot serve this location. `GET /whatsapp/senders` still lists only selectable (`ACTIVE`) senders, and a `422` never reveals an account the caller cannot see.
+
+### `DELETE /locations/{id}/whatsapp-sender`
+- **Permissions**: as `PUT`
+- **Response**: `204`, idempotent; audited only when a mapping existed
+
+### `GET /whatsapp/templates`
+- **Permissions**: any role
+- **Pagination**: cursor-based. **Filter**: `?status=PENDING|APPROVED|REJECTED`
+- **Response**: `200 { results: [{ id, name, language, body, status, created_at, updated_at }], next_cursor }`
+
+### `POST /whatsapp/templates`
+- **Permissions**: OWNER, ADMIN
+- **Request**: `{ name, language, body }`. `body` may use only `{{customer_name}}`, `{{business_name}}`, `{{location_name}}`, `{{review_link}}` and must include `{{business_name}}`.
+- **Response**: `201` the template as `PENDING`; it is submitted to Meta after commit and approval is polled.
+- **Errors**: `422` validation; `409` duplicate `(name, language)`; `503 whatsapp_not_configured` when there is no `ACTIVE` shared sender or the platform token is unset; `429` too many template creations (per-user `WHATSAPP_TEMPLATE_WRITE_RATE`, default `10/min`), because every template is submitted to the one shared Meta WABA
+
+## Customers
+
+### `POST /customers/{id}/opt-out`
+- **Permissions**: OWNER, ADMIN, MANAGER. **Accepted (code review, 2026-10-07):** a MANAGER may opt out any of the merchant's customers, not only those of assigned locations. `Customer` has no location link, and this endpoint can only opt a customer out, never back in, so the wider scope only ever moves toward compliance. Revisit if `Customer` gains a location link.
+- **Response**: `200 { id, opted_out: true, opted_out_at }`, idempotent (`opted_out_at` keeps the first time). Writes no audit row. There is no opt-back-in endpoint: `09-security/Privacy-Data-Retention.md` requires a documented merchant process that does not exist yet.
+- **Errors**: `404` unknown or another merchant's customer
+
+---
+
 ## Campaigns
 
 ### `GET /campaigns`

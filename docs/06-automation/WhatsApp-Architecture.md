@@ -42,6 +42,8 @@ class WhatsAppProvider(ABC):
 - Example: *"Hi {{customer_name}}, thanks for visiting {{business_name}}! We'd love to hear about your experience. [Review us on Google]"*
 - **Shared-pool sends must lead with `{{business_name}}` prominently** — the sending number gives the customer no brand signal otherwise.
 
+**Known V1 limitation (Phase 08, accepted 2026-10-08):** a template whose submission to Meta never completes (the submit task's transient-error retries are exhausted, or the recovery lookup after a refused submit fails permanently) stays `PENDING` with no `provider_template_id`. Approval polling covers only templates that have a `provider_template_id`, so such a template is not retried automatically. It is never marked `REJECTED` from an incomplete lookup. The merchant can create a new template under a different name. An automatic re-enqueue of old unsubmitted templates is the documented upgrade path.
+
 ## Sending
 
 - Always through Celery, never inline in a request-response cycle.
@@ -49,13 +51,13 @@ class WhatsAppProvider(ABC):
 
 ## Delivery / Read / Failure Tracking
 
-- Status updates arrive exclusively via `POST /webhooks/whatsapp/status` (see `../04-api/Webhook-Specification.md`) and update `WhatsAppMessage` — this is the only place message status ever changes.
+- Status updates arrive exclusively via `POST /webhooks/whatsapp`, Meta's single `messages` callback shared with inbound messages (see `../04-api/Webhook-Specification.md`) and update `WhatsAppMessage` — this is the only place message status ever changes.
 - Failure handling distinguishes transient errors (retry with backoff) from permanent ones (invalid number, opted-out — no retry, mark `FAILED`).
 - **These updates never propagate back onto `CampaignExecution`.** `CampaignExecution` reaching `SENT` is a one-way business-workflow fact; `WhatsAppMessage` reaching `DELIVERED` or `READ` afterward does not change `CampaignExecution.status`. See `Campaign-Engine.md` §"Responsibility Split" for the full rationale and the retry-doesn't-recount-usage rule.
 
 ## Opt-Out
 
-- A customer replying with an opt-out keyword is parsed from `POST /webhooks/whatsapp/inbound` and sets `Customer.opted_out = True`.
+- A customer replying with an opt-out keyword is parsed from `POST /webhooks/whatsapp` (the `messages` entries of Meta's single callback) and sets `Customer.opted_out = True`.
 - Also settable manually from the dashboard.
 - Once opted out, no future `CampaignExecution` is created for that phone — checked at eligibility, not just at send time.
 

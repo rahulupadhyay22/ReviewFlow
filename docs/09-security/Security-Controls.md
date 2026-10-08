@@ -6,9 +6,10 @@
 
 - [ ] OAuth tokens (Google, Meta) encrypted at rest via Fernet, key sourced from a KMS/secret manager — never hardcoded, never committed.
 - [ ] Integration credentials (`Integration.credentials_encrypted`) encrypted at rest.
-- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `GOOGLE_OAUTH_CLIENT_SECRET`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `FERNET_KEY`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_SECRET_PREVIOUS`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
+- [ ] All environment secrets (`DJANGO_SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `META_SHARED_POOL_ACCESS_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRET`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `FERNET_KEY`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_SECRET_PREVIOUS`) live in the hosting provider's secret manager, injected as env vars, read once at settings load.
 - [ ] `SHOPIFY_CLIENT_SECRET`/`_PREVIOUS` are the ReviewFlow Shopify app's own **platform** credentials (never per-merchant) — used only to verify Shopify webhook HMACs and the OAuth callback `hmac`, and never stored in `Integration.credentials_encrypted`, `config_json`, a log or an audit row (05-integrations/Shopify.md).
 
+- [ ] `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN` and `META_SHARED_POOL_ACCESS_TOKEN` are **platform** credentials (never per-merchant) — read from the environment only, and never stored in the database, a log, an audit row or an API response. An unset `META_APP_SECRET` or verify token fails closed: the inbound webhook rejects every request.
 - [ ] `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` are **platform** credentials (never per-merchant) — read from the environment only, and never stored in the database, a log, an audit row or an API response. `RAZORPAY_KEY_ID` is the public key id and is the only Razorpay value returned to the dashboard (to an OWNER, for Checkout). No card, UPI or payer contact data is stored by ReviewFlow.
 
 ## Permissions & Access

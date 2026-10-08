@@ -106,6 +106,16 @@ def test_beat_schedule_has_only_the_entries_added_so_far():
             "schedule": 900.0,
             "options": {"queue": "default"},
         },
+        "whatsapp-template-status": {
+            "task": "whatsapp.tasks.poll_template_statuses",
+            "schedule": 900.0,
+            "options": {"queue": "default"},
+        },
+        "whatsapp-shared-pool-quality": {
+            "task": "whatsapp.tasks.monitor_shared_pool_quality",
+            "schedule": 3600.0,
+            "options": {"queue": "default"},
+        },
     }
 
 
@@ -154,6 +164,7 @@ def test_env_example_contains_no_real_secrets():
 
     assert env_values.get("DJANGO_SECRET_KEY") != settings.SECRET_KEY
     for placeholder_key in ("FERNET_KEY", "META_APP_ID", "META_APP_SECRET",
+                             "META_WEBHOOK_VERIFY_TOKEN", "META_SHARED_POOL_ACCESS_TOKEN",
                              "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"):
         assert env_values.get(placeholder_key, "") == ""
 

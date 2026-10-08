@@ -41,9 +41,10 @@ CampaignExecution create — (campaign_id, transaction_id) unique
 | `POST /webhooks/petpooja` | Petpooja | Petpooja's own signature scheme |
 | `POST /webhooks/gofrugal` | GoFrugal | GoFrugal's own signature scheme |
 | `POST /webhooks/generic/{integration_id}` | Any (merchant-configured mapping) | `X-ReviewFlow-Signature: sha256=<hex HMAC-SHA256>` over the raw body, keyed with a server-generated secret (never merchant-supplied) shown once at connect |
-| `POST /webhooks/whatsapp/status` | Meta | Meta's webhook signature |
-| `POST /webhooks/whatsapp/inbound` | Meta (customer replies, incl. opt-out keywords) | Meta's webhook signature |
+| `GET /webhooks/whatsapp`, `POST /webhooks/whatsapp` | Meta (one app-level `messages` callback: customer replies incl. opt-out keywords, and message status notifications) | `GET`: Meta's verification handshake (`hub.verify_token`). `POST`: `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` over the raw body, keyed with the platform `META_APP_SECRET` — see "WhatsApp Webhook (Meta)" below |
 | `POST /billing/webhooks/razorpay` | Razorpay (payment gateway) | `X-Razorpay-Signature`: hex HMAC-SHA256 over the raw request body, keyed with the platform `RAZORPAY_WEBHOOK_SECRET`. Not a sale-capture webhook: it has no `Integration` and writes no `IntegrationEvent` — see "Billing Webhook (Razorpay)" below. |
+
+**WhatsApp Webhook (Meta)**: Meta delivers inbound messages and status notifications through one `messages` webhook field to one app-level callback URL, so ReviewFlow has one endpoint, `/webhooks/whatsapp`, for both the `GET` verification handshake and the `POST` delivery (amended 2026-10-07; source in `../05-integrations/WhatsApp-Meta.md`, M-3). The `POST` receiver verifies the signature before any database access, then tells the two kinds of entry apart by payload shape: `value.messages[]` are inbound messages (opt-out keywords are processed), `value.statuses[]` are status notifications. Status notifications are acknowledged with `200`; before Phase 11 they are discarded and never persisted. Per-phone-number or per-WABA callback overrides are not used.
 
 **Fail-closed rule**: a missing or invalid signature is always rejected (`401`) and never stored or processed — this applies to every endpoint above without exception.
 

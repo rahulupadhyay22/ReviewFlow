@@ -9,4 +9,6 @@ urlpatterns = [
     path("api/v1/", include("transactions.urls")),
     path("api/v1/", include("apikeys.urls")),
     path("api/v1/", include("billing.urls")),
+    path("api/v1/", include("whatsapp.urls")),
+    path("api/v1/", include("customers.urls")),
 ]

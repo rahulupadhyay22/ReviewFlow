@@ -116,11 +116,13 @@ Create/Update Transaction
 **Purpose**: a WhatsApp sender — either merchant-owned (`OWN_NUMBER`) or platform-owned (`SHARED_POOL`).
 **Relationships**: Merchant 1───* (null/platform-owner for `SHARED_POOL` rows); 1───* WhatsAppLocationMapping; 1───* WhatsAppMessage.
 **Tenant ownership**: MERCHANT for `OWN_NUMBER` rows; GLOBAL for `SHARED_POOL` rows.
+**RLS**: asymmetric, one policy per command (spec 08 Change 1, signed off 2026-10-07; see `../02-architecture/Multi-Tenancy.md`). Any tenant may read its own rows plus the `merchant_id IS NULL` shared row; a tenant can insert, update or delete only its own `OWN_NUMBER` rows and can never create, edit or convert a shared row. Only a transaction inside `core.tenancy.platform_write_atomic()` can insert or update the shared row; nobody can delete it.
+**Constraints**: `CHECK((sender_type = SHARED_POOL) = (merchant_id IS NULL))`; `UNIQUE(provider, phone_number_id)`; at most one `SHARED_POOL` row in V1 (dropped in V1.1 for rotation).
 
 ### WhatsAppLocationMapping
 **Purpose**: resolves which `WhatsAppAccount` a given `Location` currently sends from.
 **Unique constraint**: `(location_id)` — a location has exactly one active sender at a time.
-**Tenant ownership**: LOCATION.
+**Tenant ownership**: LOCATION. RLS goes through the location (`EXISTS` on `locations_location`), not the account, because a shared account's `merchant_id` is NULL. The service enforces that the account is `SHARED_POOL` or owned by the location's merchant.
 
 ### WhatsAppMessage
 **Purpose**: one sent (or attempted) WhatsApp message and its delivery lifecycle.
