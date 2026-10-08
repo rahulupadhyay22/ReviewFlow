@@ -63,6 +63,38 @@ def seed_billing(merchant) -> bool:
     return created
 
 
+# DEVELOPMENT FIXTURES ONLY: obviously fake Meta ids. Production's shared
+# sender is configured with `manage.py configure_shared_pool`.
+DEV_SHARED_PHONE_NUMBER_ID = "DEV-SHARED-PHONE-ID"
+DEV_SHARED_BUSINESS_ACCOUNT_ID = "DEV-SHARED-WABA-ID"
+
+
+def seed_whatsapp(merchant) -> bool:
+    """The Phase 08 fixtures: the platform SHARED_POOL WhatsAppAccount, and
+    both seed locations mapped to it. Idempotent on its own, so a database
+    seeded before Phase 08 gains them on the next run. Returns whether
+    anything was created. Local imports keep this command's import order
+    acyclic."""
+    from locations.models import Location
+    from whatsapp import services as whatsapp_services
+    from whatsapp.models import WhatsAppAccount, WhatsAppLocationMapping
+
+    created = not WhatsAppAccount.objects.shared_pool().exists()
+    # No merchant context here: the shared row is written through the audited
+    # platform path (core.tenancy.platform_write_atomic) only.
+    account = whatsapp_services.upsert_shared_pool_account(
+        phone_number_id=DEV_SHARED_PHONE_NUMBER_ID,
+        business_account_id=DEV_SHARED_BUSINESS_ACCOUNT_ID,
+        status=WhatsAppAccount.Status.ACTIVE,
+    )
+    with tenant_context(merchant.id), tenant_atomic():
+        for location in Location.objects.order_by("created_at"):
+            if not WhatsAppLocationMapping.objects.filter(location=location).exists():
+                whatsapp_services.set_location_sender(location=location, account=account, actor=None)
+                created = True
+    return created
+
+
 class Command(BaseCommand):
     help = "Creates a local test Merchant with 2 Locations and a MANAGER assigned to one."
 
@@ -79,9 +111,12 @@ class Command(BaseCommand):
             # database seeded before Phase 07 gains it here.
             membership = services.resolve_login_membership(existing_owner)
             added = seed_billing(membership.merchant) if membership is not None else False
+            added_whatsapp = seed_whatsapp(membership.merchant) if membership is not None else False
             self.stdout.write("already seeded")
             if added:
                 self.stdout.write(self.style.SUCCESS("Billing dev fixtures added (development values only)."))
+            if added_whatsapp:
+                self.stdout.write(self.style.SUCCESS("WhatsApp dev fixtures added (development values only)."))
             return
 
         password = options["password"] or secrets.token_urlsafe(16)
@@ -117,9 +152,11 @@ class Command(BaseCommand):
             )
 
         seed_billing(merchant)
+        seed_whatsapp(merchant)
 
         self.stdout.write(self.style.SUCCESS("Seed data created."))
         self.stdout.write(f"Owner:   {SEED_OWNER_EMAIL}")
         self.stdout.write(f"Manager: {SEED_MANAGER_EMAIL}")
         self.stdout.write("Billing: 4 dev plans + an ACTIVE Growth subscription (development values only).")
+        self.stdout.write("WhatsApp: the SHARED_POOL dev sender, both locations mapped (development values only).")
         self.stdout.write(f"Password: {password}")

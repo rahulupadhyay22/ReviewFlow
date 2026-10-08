@@ -3,7 +3,7 @@ from django.db import models
 from accounts.models import TeamMember, User
 from auditlog.models import AuditLog
 from core.exceptions import ReviewFlowError, TenantContextError
-from core.tenancy import get_current_merchant_id, tenant_atomic
+from core.tenancy import get_current_merchant_id, get_current_platform_write, tenant_atomic
 
 
 class ActorNotMember(ReviewFlowError):
@@ -38,3 +38,28 @@ def record(
             target_id=str(target.pk) if target is not None else None,
             metadata_json=metadata,
         )
+
+
+def record_platform(
+    action: str,
+    *,
+    actor: User | None = None,
+    target: models.Model | None = None,
+    metadata: dict | None = None,
+) -> AuditLog:
+    """Write one platform-level audit row (merchant_id NULL; spec 08 Change 1).
+
+    Only valid inside core.tenancy.platform_write_atomic(): the INSERT passes
+    the platform_insert policy only there. AuditLog.objects needs a tenant
+    context, so the row is created through the plain base manager -- still
+    RLS-gated. No membership check: the actor is platform staff, if any."""
+    if get_current_platform_write() is None:
+        raise TenantContextError("record_platform() requires platform_write_atomic().")
+    return AuditLog._base_manager.create(
+        merchant_id=None,
+        actor_user=actor,
+        action=action,
+        target_type=target._meta.label_lower if target is not None else None,
+        target_id=str(target.pk) if target is not None else None,
+        metadata_json=metadata,
+    )

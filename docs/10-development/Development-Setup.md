@@ -109,8 +109,18 @@ the seed plans answers `422 validation_error` (they have no
 `provider_plan_id`, so they are not offered), and `GET /merchant` shows
 `plan: { id, name }` for it.
 
-The `SHARED_POOL` `WhatsAppAccount` fixture (Phase 08) is not created by
-this command yet — that phase extends it.
+Phase 08 adds the platform's single `SHARED_POOL` `WhatsAppAccount`
+(obviously fake ids `DEV-SHARED-PHONE-ID` / `DEV-SHARED-WABA-ID`, status
+`ACTIVE`) and maps both seed locations to it. These are development
+values only: the account has no real Meta credentials, so no template
+submission or send works against it. The shared row is written through
+the audited platform path (`core.tenancy.platform_write_atomic`), never
+by a tenant. In production, set the real sender with
+`python manage.py configure_shared_pool --phone-number-id <id>
+--business-account-id <id> [--status ACTIVE]`; it is idempotent, writes
+one platform `AuditLog` row per real change, and reads the Meta access
+token from `META_SHARED_POOL_ACCESS_TOKEN` (an environment variable, never
+an argument).
 
 ## Testing Locally
 

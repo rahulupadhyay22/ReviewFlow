@@ -21,7 +21,6 @@ class Customer(BaseModel):
     first_seen_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
     total_transactions = models.PositiveIntegerField(default=0)
-    # Never set in Phase 04 -- opt-out is Phase 08 (inbound WhatsApp / dashboard).
     opted_out = models.BooleanField(default=False)
     opted_out_at = models.DateTimeField(null=True, blank=True)
 

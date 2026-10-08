@@ -140,3 +140,59 @@ def rls_via_parent(table, fk_column, parent_table):
     return _tenant_policy(
         table, f"EXISTS (SELECT 1 FROM {parent_table} p WHERE p.id = {table}.{fk_column})"
     )
+
+
+PLATFORM_WRITE = "NULLIF(current_setting('app.platform_write', true), '')"
+
+_SHARED_POOL_ROW = (
+    f"merchant_id IS NULL AND sender_type = 'SHARED_POOL' AND {PLATFORM_WRITE} = 'whatsapp_shared_pool'"
+)
+_OWN_NUMBER_ROW = f"merchant_id = {CURRENT_MERCHANT} AND sender_type = 'OWN_NUMBER'"
+
+
+def rls_shared_pool(table):
+    """The six policies of spec 08 Change 1 (LOCKED DECISION CHANGE, approved
+    2026-10-07) for a table whose merchant_id is NULL for platform-owned
+    SHARED_POOL rows (whatsapp_whatsappaccount).
+
+    A policy applies to one command, and FOR INSERT takes only WITH CHECK, so
+    each command has its own policy. Tenants read their own rows plus the
+    shared row; they can write only their own OWN_NUMBER rows (and can never
+    turn one into a shared row). Only a transaction inside
+    core.tenancy.platform_write_atomic() can insert or update the shared row.
+    No DELETE policy covers the shared row.
+    """
+    policies = (
+        ("tenant_read", "SELECT", f"USING (merchant_id = {CURRENT_MERCHANT} OR merchant_id IS NULL)"),
+        ("tenant_insert", "INSERT", f"WITH CHECK ({_OWN_NUMBER_ROW})"),
+        (
+            "tenant_update",
+            "UPDATE",
+            f"USING (merchant_id = {CURRENT_MERCHANT}) WITH CHECK ({_OWN_NUMBER_ROW})",
+        ),
+        ("tenant_delete", "DELETE", f"USING (merchant_id = {CURRENT_MERCHANT})"),
+        ("platform_insert", "INSERT", f"WITH CHECK ({_SHARED_POOL_ROW})"),
+        ("platform_update", "UPDATE", f"USING ({_SHARED_POOL_ROW}) WITH CHECK ({_SHARED_POOL_ROW})"),
+    )
+    create = " ".join(f"CREATE POLICY {name} ON {table} FOR {cmd} {clause};" for name, cmd, clause in policies)
+    drop = " ".join(f"DROP POLICY {name} ON {table};" for name, _cmd, _clause in reversed(policies))
+    return migrations.RunSQL(
+        sql=f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY; ALTER TABLE {table} FORCE ROW LEVEL SECURITY; {create}",
+        reverse_sql=f"{drop} ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY; ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;",
+    )
+
+
+def rls_platform_insert(table):
+    """INSERT-only platform_insert policy (spec 08 Change 1, approved
+    2026-10-07): lets a transaction inside core.tenancy.platform_write_atomic()
+    write a platform-level (merchant_id NULL) row. Run after rls_direct(),
+    which enables and forces RLS. No SELECT, UPDATE or DELETE policy is
+    added, so such rows stay invisible to tenants and immutable.
+    """
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY platform_insert ON {table} FOR INSERT "
+            f"WITH CHECK (merchant_id IS NULL AND {PLATFORM_WRITE} IS NOT NULL);"
+        ),
+        reverse_sql=f"DROP POLICY platform_insert ON {table};",
+    )

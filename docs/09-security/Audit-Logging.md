@@ -26,6 +26,7 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 **Platform-side (always logged, and always via the privileged access path described in `../02-architecture/Multi-Tenancy.md`):**
 - Any staff access to a specific merchant's data through the internal admin
 - Any cross-tenant query executed through the privileged service path
+- Shared WhatsApp sender configured or changed (`whatsapp.shared_pool_configured`; a system event with `merchant_id` NULL, written only through the platform path; metadata is the status only, never a provider id)
 - Merchant suspension / reactivation
 - Manual quota adjustment
 

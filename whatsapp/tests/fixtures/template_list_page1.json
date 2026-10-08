@@ -1,0 +1,10 @@
+{
+  "data": [
+    {"id": "TEST-TPL-OTHER-1", "name": "rf_00000000000000000000000000000002", "language": "en"},
+    {"id": "TEST-TPL-OTHER-LANG", "name": "rf_00000000000000000000000000000001", "language": "hi"}
+  ],
+  "paging": {
+    "cursors": {"before": "CURSOR-PAGE-1", "after": "CURSOR-PAGE-2"},
+    "next": "https://graph.facebook.com/v26.0/TEST-WABA-ID/message_templates?after=CURSOR-PAGE-2"
+  }
+}

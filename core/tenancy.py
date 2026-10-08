@@ -225,6 +225,47 @@ def billing_ref_lookup_atomic(ref: str) -> Iterator[str]:
         _current_lookup_billing_ref.reset(token)
 
 
+_PLATFORM_WRITE_SCOPES = frozenset({"whatsapp_shared_pool"})
+_current_platform_write = ContextVar("current_platform_write", default=None)
+
+
+def get_current_platform_write() -> str | None:
+    return _current_platform_write.get()
+
+
+@contextmanager
+def platform_write_atomic(scope: str) -> Iterator[str]:
+    """Platform write path (spec 08 Change 1 -- LOCKED DECISION CHANGE,
+    approved 2026-10-07): one transaction with SET LOCAL app.platform_write,
+    read by the platform_insert / platform_update policies on
+    whatsapp_whatsappaccount and the platform_insert policy on
+    auditlog_auditlog.
+
+    Management and platform-operation infrastructure ONLY: its sole caller is
+    whatsapp.services.upsert_shared_pool_account (itself called only by the
+    configure_shared_pool command and seed_dev). Never call it from a view,
+    serializer, tenant service, task or admin.
+
+    Refuses to run inside a merchant context (the policies are PERMISSIVE and
+    therefore ORed with tenant_isolation) and is always its own outermost
+    transaction (durable=True), so the SET LOCAL cannot outlive this block.
+    """
+    if _current_merchant_id.get() is not None:
+        raise TenantContextError("platform_write_atomic() must not run inside a tenant context.")
+    if scope not in _PLATFORM_WRITE_SCOPES:
+        raise ValueError("Unknown platform write scope.")
+    token = _current_platform_write.set(scope)
+    try:
+        with transaction.atomic(durable=True):
+            with connection.cursor() as cursor:
+                # Transaction-local; the scope is allowlisted above, so the
+                # literal is injection-safe.
+                cursor.execute(f"SET LOCAL app.platform_write = '{scope}'")
+            yield scope
+    finally:
+        _current_platform_write.reset(token)
+
+
 def tenant_task(fn):
     """Celery entry point: the task's first argument is always merchant_id.
 
