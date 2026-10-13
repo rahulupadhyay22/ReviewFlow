@@ -34,7 +34,7 @@ several specs if it is too large for one branch.
 | 05 | Public API keys                           | 02                 | Done        |
 | 06 | Priority integrations                     | 04 (+05, REST API) | Done        |
 | 07 | Billing & quota foundation                | 02                 | Done        |
-| 08 | WhatsApp                                  | 03                 | Not started |
+| 08 | WhatsApp                                  | 03                 | In progress |
 | 09 | Google Business Profile                   | 03                 | Not started |
 | 10 | Campaign engine & eligibility             | 04, 07, 08, 09     | Not started |
 | 11 | Dispatch, quota reservation & recovery    | 07, 08, 10         | Not started |
@@ -170,6 +170,21 @@ Source: `08-billing/Billing-Specification.md`,
 Phase 08 is split into two specs: `08-whatsapp-foundation` (shared
 number, templates, provider, opt-out, quality monitoring, seed) and
 `08-whatsapp-embedded-signup` (the `OWN_NUMBER` path).
+
+Status (In progress; Done only when the whole phase is complete):
+
+- `08-whatsapp-foundation`: merged (PR #16).
+- `08-whatsapp-embedded-signup`, P1-P6a: merged (PR #17). Schema and RLS,
+  the number-lookup policy, provider token selection with
+  `register_number` and `subscribe_app`, own-number activation and
+  disconnect, the transaction allowlist, `EmbeddedSignupState`, and
+  the STOP-reliability amendment (foundation Amendment A-1).
+- Remaining, blocked on unverified Meta evidence
+  (`05-integrations/WhatsApp-Meta.md`): P6b `start`/`complete`
+  (E-4, E-2b/E-10) and P7 own-number template submit and sync (E-7b).
+  `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` defaults to `False` and no
+  `start`/`complete` route exists, so merchants cannot connect an
+  own number yet.
 
 Source: `06-automation/WhatsApp-Architecture.md`,
 `01-product/User-Flows.md` §2.
