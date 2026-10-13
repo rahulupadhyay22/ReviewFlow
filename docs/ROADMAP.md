@@ -42,7 +42,7 @@ several specs if it is too large for one branch.
 | 13 | QR codes                                  | 03, 09, 12         | Not started |
 | 14 | Dashboard & analytics                     | 09, 11, 13         | Not started |
 | 15 | Privacy, retention & deletion             | 02, 04, 08, 09, 11, 12 | Not started |
-| 16 | Internal admin (Django Admin)             | 02, 04             | Not started |
+| 16 | Internal admin (Django Admin)             | 02, 04             | Done        |
 | 17 | Phased integrations                       | 04                 | Not started |
 | 18 | Pre-launch security hardening             | 00–17              | Not started |
 
