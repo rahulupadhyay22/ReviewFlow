@@ -222,3 +222,141 @@ def test_middleware_without_merchant_id_passes_through_unchanged():
 
     assert result == "view-response"
     assert calls == [None]
+
+
+# ---------------------------------------------------------------------------
+# TenantMiddleware: the single non-atomic exemption (spec
+# 08-whatsapp-embedded-signup D-1 Option A, ES-4)
+# ---------------------------------------------------------------------------
+#
+# These tests need transaction=True: pytest-django's default test wrapper is
+# itself an atomic block, which would make connection.in_atomic_block True
+# whatever the middleware did.
+
+from django.test import override_settings  # noqa: E402
+
+import core.middleware as core_middleware  # noqa: E402
+
+EXEMPT_URLCONF = "core.tests.urls_middleware"
+
+
+def _current_setting():
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_setting('app.current_merchant_id', true)")
+        return cursor.fetchone()[0]
+
+
+def _run_middleware(method, path, merchant_id, probe):
+    captured = {}
+
+    def get_response(request):
+        captured.update(probe())
+        return "response"
+
+    request = getattr(RequestFactory(), method)(path)
+    if merchant_id is not None:
+        request.merchant_id = merchant_id
+    result = TenantMiddleware(get_response)(request)
+    assert result == "response"
+    return captured
+
+
+def _probe():
+    return {
+        "merchant_id": get_current_merchant_id(),
+        "in_atomic_block": connection.in_atomic_block,
+        "setting": _current_setting(),
+    }
+
+
+def test_the_non_atomic_allowlist_is_exactly_one_url_name():
+    assert core_middleware._NON_ATOMIC_TENANT_URL_NAMES == frozenset(
+        {"whatsapp-embedded-signup-complete"}
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_post_to_the_exempt_view_gets_the_context_but_no_transaction():
+    merchant_id = uuid.uuid4()
+
+    seen = _run_middleware("post", "/signup/complete", merchant_id, _probe)
+
+    assert seen["merchant_id"] == merchant_id  # context kept for authorization
+    assert seen["in_atomic_block"] is False  # no request-wide transaction
+    assert seen["setting"] in (None, "")  # and no SET LOCAL
+    assert get_current_merchant_id() is None  # reset afterwards
+    assert connection.in_atomic_block is False
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_get_to_the_exempt_path_keeps_the_atomic_branch():
+    merchant_id = uuid.uuid4()
+
+    seen = _run_middleware("get", "/signup/complete", merchant_id, _probe)
+
+    assert seen["merchant_id"] == merchant_id
+    assert seen["in_atomic_block"] is True
+    assert seen["setting"] == str(merchant_id)
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_post_to_any_other_session_endpoint_keeps_the_atomic_branch():
+    merchant_id = uuid.uuid4()
+
+    seen = _run_middleware("post", "/signup/other", merchant_id, _probe)
+
+    assert seen["merchant_id"] == merchant_id
+    assert seen["in_atomic_block"] is True
+    assert seen["setting"] == str(merchant_id)
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_every_other_http_method_to_the_exempt_path_stays_atomic():
+    merchant_id = uuid.uuid4()
+    for method in ("get", "put", "patch", "delete", "head", "options"):
+        seen = _run_middleware(method, "/signup/complete", merchant_id, _probe)
+        assert seen["in_atomic_block"] is True, method
+        assert seen["setting"] == str(merchant_id), method
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_an_unresolvable_path_is_not_exempt():
+    merchant_id = uuid.uuid4()
+
+    seen = _run_middleware("post", "/no/such/path", merchant_id, _probe)
+
+    assert seen["in_atomic_block"] is True
+    assert seen["setting"] == str(merchant_id)
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+def test_exempt_path_without_a_merchant_passes_through_unchanged():
+    seen = _run_middleware("post", "/signup/complete", None, _probe)
+
+    assert seen["merchant_id"] is None
+    assert seen["in_atomic_block"] is False
+    assert seen["setting"] in (None, "")
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(ROOT_URLCONF=EXEMPT_URLCONF)
+@pytest.mark.parametrize("path", ["/signup/complete", "/signup/other"])
+def test_context_and_transaction_are_cleaned_up_when_the_view_raises(path):
+    merchant_id = uuid.uuid4()
+
+    def get_response(request):
+        raise RuntimeError("view failed")
+
+    request = RequestFactory().post(path)
+    request.merchant_id = merchant_id
+    with pytest.raises(RuntimeError, match="view failed"):
+        TenantMiddleware(get_response)(request)
+
+    assert get_current_merchant_id() is None
+    assert connection.in_atomic_block is False

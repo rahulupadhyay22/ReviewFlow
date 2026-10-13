@@ -225,6 +225,60 @@ def billing_ref_lookup_atomic(ref: str) -> Iterator[str]:
         _current_lookup_billing_ref.reset(token)
 
 
+_current_lookup_phone_number_id = ContextVar("current_lookup_phone_number_id", default=None)
+
+_PHONE_NUMBER_ID = re.compile(r"[0-9]{1,64}")
+
+
+def get_current_lookup_phone_number_id() -> str | None:
+    return _current_lookup_phone_number_id.get()
+
+
+def is_valid_phone_number_id(value) -> bool:
+    """The one check for a provider phone_number_id used in the own-number
+    lookup: 1-64 ASCII digits in full (fullmatch: a trailing newline or a
+    non-ASCII digit is refused). Shared by whatsapp_number_lookup_atomic and by
+    callers that must decide whether an id can be an own number at all."""
+    return isinstance(value, str) and _PHONE_NUMBER_ID.fullmatch(value) is not None
+
+
+@contextmanager
+def whatsapp_number_lookup_atomic(phone_number_id: str) -> Iterator[str]:
+    """Own-number inbound STOP lookup only (spec 08-whatsapp-embedded-signup
+    ES-3 -- LOCKED DECISION CHANGE, approved 2026-10-09): one transaction with
+    SET LOCAL app.current_whatsapp_phone_number_id, read by the SELECT-only
+    whatsapp_number_lookup policy on whatsapp_whatsappaccount.
+
+    Used only after the Meta webhook signature has been verified, by the
+    inbound opt-out fan-out task. Never call it from a view or a request path.
+
+    Refuses to run inside a merchant context: the tenant and lookup policies
+    are PERMISSIVE, so PostgreSQL ORs them, and nesting (a savepoint) would
+    expose the account row (and, transitively, its merchant) to an unrelated
+    merchant's transaction. It also sets neither app.current_merchant_id nor
+    app.platform_write, so no write policy can match inside it.
+
+    It must also be its own outermost transaction: durable=True makes Django
+    raise RuntimeError if it is opened inside any other atomic block (Django's
+    own test-case transactions excepted), so the SET LOCAL can never outlive
+    this block. Mirrors billing_ref_lookup_atomic().
+    """
+    if _current_merchant_id.get() is not None:
+        raise TenantContextError("whatsapp_number_lookup_atomic() must not run inside a tenant context.")
+    if not is_valid_phone_number_id(phone_number_id):
+        raise ValueError("phone_number_id must match ^[0-9]{1,64}$.")
+    token = _current_lookup_phone_number_id.set(phone_number_id)
+    try:
+        with transaction.atomic(durable=True):
+            with connection.cursor() as cursor:
+                # Transaction-local; the id is validated digits above, so the
+                # literal is injection-safe.
+                cursor.execute(f"SET LOCAL app.current_whatsapp_phone_number_id = '{phone_number_id}'")
+            yield phone_number_id
+    finally:
+        _current_lookup_phone_number_id.reset(token)
+
+
 _PLATFORM_WRITE_SCOPES = frozenset({"whatsapp_shared_pool"})
 _current_platform_write = ContextVar("current_platform_write", default=None)
 
