@@ -40,7 +40,7 @@ changes, which `/ship-feature` handles when a phase is completed.
   route exists and `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` defaults to
   `False`.
 - Also eligible: 09 — Google Business Profile,
-  16 — Internal admin (Django Admin), 17 — Phased integrations
+  17 — Phased integrations
 
 Phases 00–07 are Done. Django apps present:
 
