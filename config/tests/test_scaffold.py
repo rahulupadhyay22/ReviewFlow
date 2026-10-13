@@ -293,7 +293,10 @@ def test_installed_django_version_matches_the_pin():
 
 
 @pytest.mark.django_db
-def test_admin_url_serves_login_page_for_anonymous_user(client):
+def test_admin_url_serves_login_page_for_anonymous_user(client, settings):
+    # Spec 16: /admin/ is reachable only from ADMIN_ALLOWED_IPS (default
+    # empty = deny all); admit the test client's REMOTE_ADDR.
+    settings.ADMIN_ALLOWED_IPS = ["127.0.0.1/32"]
     response = client.get("/admin/", follow=True)
     assert response.status_code == 200
     assert response.redirect_chain[-1][0].startswith("/admin/login/")

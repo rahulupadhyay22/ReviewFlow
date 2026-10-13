@@ -104,10 +104,12 @@ def test_merchant_b_cannot_insert_an_own_number_for_merchant_a(make_merchant):
             )
 
 
-def test_platform_write_scope_allowlist_is_unchanged():
+def test_platform_write_scope_allowlist_is_pinned():
     import core.tenancy as tenancy
 
-    assert tenancy._PLATFORM_WRITE_SCOPES == frozenset({"whatsapp_shared_pool"})
+    # Spec 08 added no scope. "staff_auth" is spec 16 LC-1 (LOCKED DECISION
+    # CHANGE, approved 2026-10-13); any further scope needs fresh sign-off.
+    assert tenancy._PLATFORM_WRITE_SCOPES == frozenset({"whatsapp_shared_pool", "staff_auth"})
 
 
 # --- template <-> WABA binding and its partial uniques ------------------------------------------------

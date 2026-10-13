@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.forms import AdminUserCreationForm, UserChangeForm
+from django.urls import reverse
+from django.utils.html import format_html
 
 from accounts.models import Merchant, User
 
@@ -46,10 +48,18 @@ class UserAdmin(DjangoUserAdmin):
 
 @admin.register(Merchant)
 class MerchantAdmin(admin.ModelAdmin):
-    """Read-only: suspension/reactivation is an audited Phase 16 action."""
+    """Read-only: suspension/reactivation is a deferred Phase 16 action (spec
+    16 D4). Merchant is global, so listing it reads no tenant data; the
+    dead-letter link is the explicit one-merchant selection for the audited
+    read (spec 16 D1)."""
 
-    list_display = ("name", "status", "timezone", "created_at")
+    list_display = ("name", "status", "timezone", "created_at", "dead_letter_events")
     search_fields = ("name",)
+
+    @admin.display(description="Dead-letter events")
+    def dead_letter_events(self, obj):
+        url = reverse("admin:events_dead_letter", kwargs={"merchant_id": obj.pk})
+        return format_html('<a href="{}">Review (audited)</a>', url)
 
     def has_add_permission(self, request):
         return False

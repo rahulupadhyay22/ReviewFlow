@@ -25,11 +25,18 @@ class SessionMerchantMiddleware:
     behavior. Membership and role are re-checked per request by
     IsMerchantMember. Provider webhook receivers are skipped by resolved
     url_name -- see _PRE_TENANT_URL_NAMES.
+
+    Django Admin (spec 16) is never tenant-wrapped either, even for a staff
+    user whose session also holds a dashboard merchant_id: staff read tenant
+    data only through auditlog.services.staff_merchant_read, which opens its
+    own durable tenant transactions for an explicitly selected merchant and
+    refuses to run inside another tenant context or transaction.
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
         self._pre_tenant_paths = None
+        self._admin_prefix = None
 
     @staticmethod
     def _is_pre_tenant_url_name(request) -> bool:
@@ -47,10 +54,12 @@ class SessionMerchantMiddleware:
                 reverse("auth-login-totp"),
                 reverse("auth-accept-invite"),
             }
+            self._admin_prefix = reverse("admin:index")
         merchant_id = request.session.get("merchant_id")
         if (
             not merchant_id
             or request.path_info in self._pre_tenant_paths
+            or request.path_info.startswith(self._admin_prefix)
             or not request.user.is_authenticated
         ):
             return self.get_response(request)

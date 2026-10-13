@@ -8,7 +8,6 @@ import pyotp
 import pytest
 from cryptography.fernet import Fernet
 from django.db import connection
-from django.test import Client as DjangoClient
 from django.urls import reverse
 from django.utils import timezone as dj_timezone
 from rest_framework.test import APIClient
@@ -727,15 +726,17 @@ def test_captured_logs_during_totp_flow_contain_no_secret_or_codes(
 # --- Django Admin ------------------------------------------------------
 
 
-def test_admin_user_change_page_shows_confirmed_at_and_hides_totp_secrets(make_merchant, password):
+def test_admin_user_change_page_shows_confirmed_at_and_hides_totp_secrets(
+    make_merchant, password, admin_session_client
+):
     member = make_merchant()
     with tenant_context(member.merchant_id):
         secret, _uri = services.begin_totp_setup(user=member.user, password=password)
         services.confirm_totp_setup(user=member.user, code=pyotp.TOTP(secret).now())
 
     staff = User.objects.create_superuser("staff@example.com", password)
-    admin_client = DjangoClient()
-    admin_client.force_login(staff)
+    # Spec 16: authenticated admin session (allowlist + 2FA flag).
+    admin_client = admin_session_client(staff)
 
     resp = admin_client.get(reverse("admin:accounts_user_change", args=[member.user_id]))
 
@@ -749,7 +750,7 @@ def test_admin_user_change_page_shows_confirmed_at_and_hides_totp_secrets(make_m
         assert stored_hash not in content
 
 
-def test_admin_change_form_post_cannot_overwrite_totp_secret_fields(make_merchant, password):
+def test_admin_change_form_post_cannot_overwrite_totp_secret_fields(make_merchant, password, admin_session_client):
     """UserEditForm excludes the TOTP columns, so even a staff POST to the
     change form (e.g. a crafted request replaying hidden-field values) must
     leave them untouched -- the spec requires they are never posted, not
@@ -761,8 +762,7 @@ def test_admin_change_form_post_cannot_overwrite_totp_secret_fields(make_merchan
     before = User.objects.get(pk=member.user_id)
 
     staff = User.objects.create_superuser("staff2@example.com", password)
-    admin_client = DjangoClient()
-    admin_client.force_login(staff)
+    admin_client = admin_session_client(staff)
 
     resp = admin_client.post(
         reverse("admin:accounts_user_change", args=[member.user_id]),

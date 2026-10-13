@@ -106,6 +106,17 @@ class TotpSetupRequired(ReviewFlowError):
         super().__init__("Start two-factor setup first.")
 
 
+class NotActiveStaff(ReviewFlowError):
+    """A staff-only operation (spec 16) was attempted for a user who is not an
+    active staff user."""
+
+    http_status = 403
+    code = "not_active_staff"
+
+    def __init__(self):
+        super().__init__("This operation requires an active staff user.")
+
+
 class TotpNotEnabled(ReviewFlowError):
     """Disable was called for a user who does not have 2FA enabled."""
 
