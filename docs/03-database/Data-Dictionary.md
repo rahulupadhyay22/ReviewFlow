@@ -163,6 +163,7 @@ Explicit mapping between a merchant-level integration and an internal location. 
 | body | text | No | contains `{{variable}}` placeholders |
 | status | enum | No | PENDING, APPROVED, REJECTED |
 | provider_template_id | string | Yes | Meta's own template ID |
+| whatsapp_account_id | FK → WhatsAppAccount | Yes | *(spec 08-whatsapp-embedded-signup ES-2, approved 2026-10-09)* NULL = the shared-pool WABA (all existing rows); otherwise one of the merchant's own `OWN_NUMBER` accounts, whose WABA the template belongs to. Meta templates are per WABA (`../05-integrations/WhatsApp-Meta.md` E-7a) |
 
 ### WhatsAppAccount
 | Field | Type | Nullable | Notes |
@@ -174,12 +175,23 @@ Explicit mapping between a merchant-level integration and an internal location. 
 | business_account_id | string | Yes | |
 | status | enum | No | ACTIVE, PENDING, SUSPENDED |
 | connected_at | datetime | Yes | |
+| access_token_enc | encrypted blob | Yes | *(spec 08-whatsapp-embedded-signup ES-1, approved 2026-10-09)* Fernet ciphertext of the merchant's Meta business integration system user token (`OWN_NUMBER` only). Always NULL for `SHARED_POOL` (env-only token) and after a disconnect. No expiry/refresh field until token expiry is verified (WhatsApp-Meta.md E-2c) |
 
 ### WhatsAppLocationMapping
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | whatsapp_account_id | FK → WhatsAppAccount | No | |
 | location_id | FK → Location | No | unique |
+
+### EmbeddedSignupState
+*(spec 08-whatsapp-embedded-signup ES-18, approved 2026-10-09.)* One short-lived, single-use WhatsApp Embedded Signup state. The row is deleted when the state is consumed.
+
+| Field | Type | Nullable | Notes |
+|---|---|---|---|
+| merchant_id | FK → Merchant | No | session merchant at `start` |
+| user_id | FK → User | No | session user at `start` |
+| state_hash | string(64) | No | unique; lowercase hex SHA-256 of the state. The plaintext state is never stored |
+| expires_at | datetime | No | issue time + `WHATSAPP_SIGNUP_STATE_MAX_AGE_SECONDS` |
 
 ### WhatsAppMessage
 | Field | Type | Nullable | Notes |

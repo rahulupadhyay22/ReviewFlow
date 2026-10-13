@@ -30,8 +30,14 @@ class WhatsAppService:
 class WhatsAppProvider(ABC):
     def send(self, to: str, template: MessageTemplate, variables: dict) -> ProviderSendResult: ...
     def parse_status_webhook(self, payload: dict) -> list[StatusUpdate]: ...
-    def register_number(self, merchant, number) -> ProviderNumberRef: ...
+    def register_number(self, credential, phone_number_id, pin) -> None: ...
 ```
+
+*Signature amended by spec 08-whatsapp-embedded-signup (approved 2026-10-09).* The provider has no database access, so it never takes a `Merchant`.
+
+**Credentials per account.** A `SHARED_POOL` account uses the platform env token. An `OWN_NUMBER` account uses its merchant's decrypted `access_token_enc`, Meta's per-customer business token (`../05-integrations/WhatsApp-Meta.md` E-3).
+
+**Onboarding calls.** The provider also exposes `exchange_code`, `verify_number_access` and `subscribe_app` for the Embedded Signup flow.
 
 `MetaCloudProvider` is the V1 (and only) implementation, against Meta's Graph API. The interface exists so a future `GupshupProvider`/`ThreeSixtyDialogProvider` can be added without touching `campaigns/` code — the scheduler only ever calls `WhatsAppService.send_template()`.
 
@@ -40,7 +46,7 @@ class WhatsAppProvider(ABC):
 - Templates must be pre-approved by Meta before use — no free-form marketing copy.
 - Standard variables: `{{customer_name}}`, `{{business_name}}`, `{{location_name}}`, `{{review_link}}`.
 - Example: *"Hi {{customer_name}}, thanks for visiting {{business_name}}! We'd love to hear about your experience. [Review us on Google]"*
-- **Shared-pool sends must lead with `{{business_name}}` prominently** — the sending number gives the customer no brand signal otherwise.
+- **Shared-pool sends must lead with `{{business_name}}` prominently** — the sending number gives the customer no brand signal otherwise. This rule applies to shared-pool templates only: a template bound to a merchant's own `OWN_NUMBER` account is not required to include `{{business_name}}` (spec 08-whatsapp-embedded-signup, approved 2026-10-09).
 
 **Known V1 limitation (Phase 08, accepted 2026-10-08):** a template whose submission to Meta never completes (the submit task's transient-error retries are exhausted, or the recovery lookup after a refused submit fails permanently) stays `PENDING` with no `provider_template_id`. Approval polling covers only templates that have a `provider_template_id`, so such a template is not retried automatically. It is never marked `REJECTED` from an incomplete lookup. The merchant can create a new template under a different name. An automatic re-enqueue of old unsubmitted templates is the documented upgrade path.
 
@@ -59,6 +65,7 @@ class WhatsAppProvider(ABC):
 
 - A customer replying with an opt-out keyword is parsed from `POST /webhooks/whatsapp` (the `messages` entries of Meta's single callback) and sets `Customer.opted_out = True`.
 - Also settable manually from the dashboard.
+- **Reliability (amended 2026-10-12):** if the keyword cannot be published to the broker, the webhook answers `503` so Meta redelivers it. The fan-out then opts the customer out inline, merchant by merchant, attempts every merchant, and retries only the failed ones a bounded number of times, never dropping a failure silently. It uses `acks_late` with `reject_on_worker_lost`, and everything is idempotent. **Limitations:** the broker is not durable storage, so a message lost from Redis after a successful publish is not recovered; a retry needs the broker; and after a hard kill of the whole worker a queued STOP is redelivered only after the broker's visibility timeout (3600 s by default, not overridden), from reading the Celery and kombu source rather than an observed test.
 - Once opted out, no future `CampaignExecution` is created for that phone — checked at eligibility, not just at send time.
 
 ## Quota
@@ -73,7 +80,21 @@ class WhatsAppProvider(ABC):
 
 ## Migration: Shared → Own Number
 
-A merchant on the shared number can connect their own later: a new `WhatsAppAccount(sender_type=OWN_NUMBER)` is created, and `WhatsAppLocationMapping` is repointed to it. Existing message history stays attributed to whichever account was active at send time via `WhatsAppMessage.whatsapp_account_id` — no backfill needed.
+A merchant on the shared number can connect their own later: a new `WhatsAppAccount(sender_type=OWN_NUMBER)` is created, and `WhatsAppLocationMapping` is repointed to it. Existing message history stays attributed to whichever account was active at send time via `WhatsAppMessage.whatsapp_account_id` — no backfill needed. The repointing is a separate `PUT /locations/{id}/whatsapp-sender`, made once the own number is `ACTIVE`; Embedded Signup never maps locations itself.
+
+**Own-number lifecycle** *(spec 08-whatsapp-embedded-signup, approved 2026-10-09)*:
+
+- `PENDING` after Embedded Signup completes and the number is registered;
+- `ACTIVE` once the app is subscribed to the WABA. `ACTIVE` means "registered and subscribed". Meta's exact ready-to-send criteria are unverified (WhatsApp-Meta.md E-11);
+- `SUSPENDED` on disconnect, or when activation fails permanently.
+
+Disconnect is refused while locations are mapped. It is local only: ReviewFlow clears its stored token, the number is never deregistered, and the app stays subscribed, so STOP replies are still honoured. Clearing the stored token does not revoke the merchant's grant to the app in Meta (WhatsApp-Meta.md E-8c, unverified).
+
+**Own-number templates** belong to that number's WABA (`MessageTemplate.whatsapp_account`; NULL = the shared WABA). Template operations on an own WABA stay disabled until E-7b is verified.
+
+**Opt-out on an own number:** a STOP to an own number opts the customer out of that number's merchant only. The merchant is resolved after signature verification by the approved `whatsapp_number_lookup` (ES-3) (`../02-architecture/Multi-Tenancy.md`).
+
+**Known limitation:** ReviewFlow does not yet react when a merchant removes its app in Meta (`account_update` `PARTNER_APP_UNINSTALLED`).
 
 ## Onboarding Flow
 

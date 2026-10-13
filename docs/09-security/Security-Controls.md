@@ -10,6 +10,12 @@
 - [ ] `SHOPIFY_CLIENT_SECRET`/`_PREVIOUS` are the ReviewFlow Shopify app's own **platform** credentials (never per-merchant) — used only to verify Shopify webhook HMACs and the OAuth callback `hmac`, and never stored in `Integration.credentials_encrypted`, `config_json`, a log or an audit row (05-integrations/Shopify.md).
 
 - [ ] `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN` and `META_SHARED_POOL_ACCESS_TOKEN` are **platform** credentials (never per-merchant) — read from the environment only, and never stored in the database, a log, an audit row or an API response. An unset `META_APP_SECRET` or verify token fails closed: the inbound webhook rejects every request.
+- [ ] Merchant Meta credentials *(spec 08-whatsapp-embedded-signup, approved 2026-10-09)*:
+  - **Business token** (one per merchant own number): stored only as Fernet ciphertext in `WhatsAppAccount.access_token_enc`, decrypted only inside the WhatsApp provider. Cleared on disconnect (this discards ReviewFlow's copy only; it does not revoke the grant in Meta). Never logged, audited, returned, or passed as a Celery task argument.
+  - **Embedded Signup code and two-step PIN**: held only in request memory for the three onboarding calls allowed by the approved `Architecture.md` exception (ES-4), and never persisted anywhere.
+  - **Embedded Signup state**: only its SHA-256 hash is stored (`EmbeddedSignupState`), bound to the merchant and user, expiring, and consumed exactly once in a short committed transaction before any Meta call. The plaintext state is never stored, logged or audited, and is never kept in Redis or the Django session.
+  - Those code paths use Django's `sensitive_variables` and `sensitive_post_parameters` (`code`, `pin`).
+  - No request-body logging, and no error reporter that captures frame locals unscrubbed.
 - [ ] `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` are **platform** credentials (never per-merchant) — read from the environment only, and never stored in the database, a log, an audit row or an API response. `RAZORPAY_KEY_ID` is the public key id and is the only Razorpay value returned to the dashboard (to an OWNER, for Checkout). No card, UPI or payer contact data is stored by ReviewFlow.
 
 ## Permissions & Access
@@ -31,6 +37,7 @@
 - [ ] Every inbound webhook endpoint verifies signature/secret and fails closed (rejects on missing/invalid signature — never "process anyway").
 - [ ] The Razorpay billing webhook verifies `X-Razorpay-Signature` (HMAC-SHA256 over the raw body) before any database read, rejects every request when `RAZORPAY_WEBHOOK_SECRET` is unset, and takes the merchant only from the stored provider subscription reference, never from the payload.
 - [ ] A spike in invalid-signature attempts on any endpoint triggers an internal alert.
+- [ ] WhatsApp opt-out reliability (amended 2026-10-12): a broker failure on a STOP answers `503` (never a silent `200`); a failed or exhausted opt-out fan-out logs an error-level event (`whatsapp.optout_enqueue_failed`, `whatsapp.optout_fanout_exhausted`) with counts and merchant ids only, never a phone number, and that log is alerted on.
 - [ ] Outbound webhooks (future) are HMAC-signed and timestamped to prevent replay.
 
 ## Identifiers

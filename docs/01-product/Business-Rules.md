@@ -67,5 +67,5 @@ Full detail and rationale in `../08-billing/Billing-Specification.md`; the bindi
 ## 9. WhatsApp Compliance
 
 - Only Meta-approved message templates are used; no free-form marketing copy.
-- Shared-pool messages must clearly identify the business by name in the message body.
+- Shared-pool messages must clearly identify the business by name in the message body. Templates sent from a merchant's own WhatsApp number (`OWN_NUMBER`) are not required to include `{{business_name}}`; ReviewFlow does not enforce it for them (spec 08-whatsapp-embedded-signup, approved 2026-10-09).
 - A campaign cannot be activated until: a Google location is connected (or explicitly skipped), a WhatsApp sender is configured, and at least one approved template exists.

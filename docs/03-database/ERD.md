@@ -10,6 +10,7 @@ Merchant 1───* IntegrationEvent      (direct — merchant_id resolved at c
 Merchant 1───* ApiKey
 Merchant 1───* GoogleConnection
 Merchant 1───* WhatsAppAccount
+Merchant 1───* EmbeddedSignupState *───1 User   (short-lived, hash-only, single-use signup state — spec 08-whatsapp-embedded-signup ES-18)
 Merchant 1───1 Subscription *───1 Plan      (Subscription.plan is the merchant's plan; Merchant has no plan column)
 
 Merchant 1───* Integration
