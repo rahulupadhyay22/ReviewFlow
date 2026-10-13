@@ -84,17 +84,24 @@ def test_the_fan_out_is_idempotent(world, django_capture_on_commit_callbacks):
     assert customer_state(world["A"]) == (True, first_at)
 
 
-def test_a_failure_for_one_merchant_does_not_stop_the_others_and_is_logged_without_the_phone(
-    world, monkeypatch, caplog, django_capture_on_commit_callbacks
+def test_a_failure_for_one_merchant_does_not_stop_the_others_and_is_not_dropped_or_logged_with_the_phone(
+    world, monkeypatch, caplog
 ):
+    """Foundation Amendment A-1 (2026-10-12): every merchant is still attempted,
+    but the failure is no longer swallowed. After the loop the task raises so
+    the failed merchant is retried (called directly there is no retry, so the
+    error propagates). The log carries the merchant id and the exception class,
+    never the phone."""
+    from whatsapp.exceptions import OptOutFanOutIncomplete
+
     fail_for(monkeypatch, "shared_opt_out_applies", world["A"].id)
     caplog.set_level(logging.DEBUG)
 
-    with django_capture_on_commit_callbacks(execute=True):
+    with pytest.raises(OptOutFanOutIncomplete):
         tasks.fan_out_inbound_opt_out(SHARED_PHONE_NUMBER_ID, CUSTOMER_PHONE)
 
-    assert customer_state(world["A"]) == (False, None)
-    assert customer_state(world["B"])[0] is True
+    assert customer_state(world["A"]) == (False, None)  # the failed one is not done...
+    assert customer_state(world["B"])[0] is True  # ...but the others were still attempted
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert str(world["A"].id) in logged and "RuntimeError" in logged
     assert "9999990001" not in logged
@@ -108,7 +115,12 @@ def test_an_unknown_phone_number_id_is_a_no_op(world, django_capture_on_commit_c
     assert customer_state(world["B"]) == (False, None)
 
 
-def test_a_non_shared_phone_number_id_is_a_no_op(world, make_own_account, django_capture_on_commit_callbacks):
+def test_an_own_account_whose_id_is_not_digits_only_is_a_no_op(
+    world, make_own_account, django_capture_on_commit_callbacks
+):
+    # Own numbers are otherwise handled since spec 08-whatsapp-embedded-signup
+    # ES-3 (see test_own_number_inbound.py). This account's id ("OWN-PHONE-ID-n")
+    # is not digits-only, so the lookup can never match it: still a no-op.
     own = make_own_account(world["A"])
 
     with django_capture_on_commit_callbacks(execute=True):
@@ -117,18 +129,23 @@ def test_a_non_shared_phone_number_id_is_a_no_op(world, make_own_account, django
     assert customer_state(world["A"]) == (False, None)
 
 
-def test_the_fan_out_only_enqueues_per_merchant_opt_outs_for_applicable_merchants(
-    world, monkeypatch, django_capture_on_commit_callbacks
+def test_the_fan_out_opts_out_inline_only_for_applicable_merchants_and_enqueues_no_second_task(
+    world, monkeypatch
 ):
+    """Foundation Amendment A-1: no second broker hop. The applicable merchants
+    (A and B) are opted out inside the fan-out itself; C (no mapping), D (no
+    Customer, none is created) and the DELETED E are untouched."""
     delay = Mock()
     monkeypatch.setattr(tasks.process_inbound_opt_out, "delay", delay)
 
-    with django_capture_on_commit_callbacks(execute=True):
-        tasks.fan_out_inbound_opt_out(SHARED_PHONE_NUMBER_ID, CUSTOMER_PHONE)
+    tasks.fan_out_inbound_opt_out(SHARED_PHONE_NUMBER_ID, CUSTOMER_PHONE)
 
-    enqueued = sorted(str(call.args[0]) for call in delay.call_args_list)
-    assert enqueued == sorted([str(world["A"].id), str(world["B"].id)])
-    assert all(call.args[1] == CUSTOMER_PHONE for call in delay.call_args_list)
+    delay.assert_not_called()
+    assert customer_state(world["A"])[0] is True
+    assert customer_state(world["B"])[0] is True
+    assert customer_state(world["C"]) == (False, None)
+    assert customer_state(world["D"]) is None
+    assert customer_state(world["E"]) == (False, None)
 
 
 def test_shared_opt_out_applies_is_scoped_to_the_current_merchant(world):

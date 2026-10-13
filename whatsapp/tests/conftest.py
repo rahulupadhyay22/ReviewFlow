@@ -12,6 +12,7 @@ import urllib.error
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from django.core.cache import cache
 from django.utils import timezone as dj_timezone
 from rest_framework.settings import api_settings as drf_api_settings
@@ -148,22 +149,35 @@ def shared_account(make_shared_account):
 
 
 @pytest.fixture
+def fernet_key(settings):
+    """A valid FERNET_KEY for tests that encrypt or decrypt a credential."""
+    settings.FERNET_KEY = Fernet.generate_key().decode()
+    return settings.FERNET_KEY
+
+
+@pytest.fixture
 def make_own_account():
-    """An OWN_NUMBER row for a merchant. This spec never creates one through a
-    service, so it is written under that merchant's own context (allowed by
-    the tenant_insert policy), standing in for the second spec."""
+    """An OWN_NUMBER row for a merchant, written under that merchant's own
+    context (allowed by the tenant_insert policy). `token` (optional) is
+    stored encrypted in access_token_enc, so it needs the `fernet_key`
+    fixture. The default ids are not digits-only: pass `phone_number_id=` a
+    digits-only id for anything that goes through the own-number STOP lookup,
+    which accepts only digits."""
     counter = iter(range(1, 1000))
 
-    def _make(merchant, status="ACTIVE"):
+    def _make(merchant, status="ACTIVE", *, token=None, phone_number_id=None):
+        from core.crypto import encrypt
+
         n = next(counter)
         with tenant_context(merchant.id), tenant_atomic():
             return WhatsAppAccount.objects.create(
                 merchant=merchant,
                 sender_type=WhatsAppAccount.SenderType.OWN_NUMBER,
                 provider=WhatsAppAccount.Provider.META_CLOUD,
-                phone_number_id=f"OWN-PHONE-ID-{n}",
+                phone_number_id=phone_number_id or f"OWN-PHONE-ID-{n}",
                 business_account_id=f"OWN-WABA-ID-{n}",
                 status=status,
+                access_token_enc=encrypt(token) if token else None,
             )
 
     return _make
@@ -270,10 +284,11 @@ def throttle_rates(monkeypatch):
     override_settings cannot reach the dict bound at import time). Patched on
     the one subclass only, so every other throttle keeps its production rate;
     monkeypatch restores it after the test."""
-    from whatsapp.views import TemplateWriteRateThrottle
+    from whatsapp.views import SenderWriteRateThrottle, TemplateWriteRateThrottle
 
     def _set(**rates):
         merged = {**drf_api_settings.DEFAULT_THROTTLE_RATES, **rates}
-        monkeypatch.setattr(TemplateWriteRateThrottle, "THROTTLE_RATES", merged)
+        for throttle in (TemplateWriteRateThrottle, SenderWriteRateThrottle):
+            monkeypatch.setattr(throttle, "THROTTLE_RATES", merged)
 
     return _set
