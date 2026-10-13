@@ -165,8 +165,11 @@ def test_env_example_contains_no_real_secrets():
     assert env_values.get("DJANGO_SECRET_KEY") != settings.SECRET_KEY
     for placeholder_key in ("FERNET_KEY", "META_APP_ID", "META_APP_SECRET",
                              "META_WEBHOOK_VERIFY_TOKEN", "META_SHARED_POOL_ACCESS_TOKEN",
+                             "META_EMBEDDED_SIGNUP_CONFIG_ID",
                              "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"):
         assert env_values.get(placeholder_key, "") == ""
+    # Embedded Signup ships disabled (spec 08-whatsapp-embedded-signup ES-10).
+    assert env_values.get("WHATSAPP_EMBEDDED_SIGNUP_ENABLED") == "False"
 
 
 # ---------------------------------------------------------------------------

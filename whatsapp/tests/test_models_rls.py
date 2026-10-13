@@ -45,7 +45,10 @@ def test_rls_is_enabled_and_forced_on_all_three_tables():
     assert sorted(rows) == sorted((t, True, True) for t in TABLES)
 
 
-def test_whatsappaccount_has_exactly_the_six_change_1_policies():
+def test_whatsappaccount_has_exactly_the_six_change_1_policies_plus_the_number_lookup():
+    # The six Change 1 policies are unchanged. The approved ES-3 (spec
+    # 08-whatsapp-embedded-signup) adds exactly one more, SELECT-only: the
+    # post-signature inbound STOP lookup. Nothing else may appear.
     rows = _sql("SELECT policyname, cmd FROM pg_policies WHERE tablename = 'whatsapp_whatsappaccount'")
     assert sorted(rows) == sorted(
         [
@@ -55,6 +58,7 @@ def test_whatsappaccount_has_exactly_the_six_change_1_policies():
             ("tenant_delete", "DELETE"),
             ("platform_insert", "INSERT"),
             ("platform_update", "UPDATE"),
+            ("whatsapp_number_lookup", "SELECT"),
         ]
     )
 
