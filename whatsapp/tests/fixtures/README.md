@@ -22,3 +22,14 @@ All values are fake: phones `+919999990001` / `15550000001`, ids `TEST-*`,
   in another language, page 2 (the last page, no `paging.next`) holds the
   match. The paging key names (`paging.cursors.after`, `paging.next`) are the
   standard Graph API shape and only partly confirmed.
+
+## Embedded Signup (spec 08-whatsapp-embedded-signup)
+
+- `success_true.json`: the documented `{"success": true}` response of
+  `POST /{PHONE_NUMBER_ID}/register` (E-6a) and
+  `POST /{WABA_ID}/subscribed_apps` (E-5a), both VERIFIED in
+  `docs/05-integrations/WhatsApp-Meta.md`.
+- **Deliberately not present (evidence blockers):** a token-exchange response
+  (`oauth_token_exchange.json`, E-2b/E-10) and a `phone_numbers` ownership
+  response for the signup check (E-4). They are captured from a development
+  app, never written from field names, and arrive with P6b.
