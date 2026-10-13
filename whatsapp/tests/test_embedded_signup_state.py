@@ -1,8 +1,9 @@
 """EmbeddedSignupState (spec 08-whatsapp-embedded-signup ES-18): hash-only,
 merchant- and user-bound, expiring, atomically single-use. Covers the storage
 primitives issue_signup_state / consume_signup_state, the table's RLS, and the
-race. The start/complete endpoints that call them are P6b (blocked on
-evidence) and are not tested here.
+race. The `start` endpoint that issues a state is tested in
+test_embedded_signup_start.py. The `complete` endpoint that consumes one is
+P6b (blocked on evidence), does not exist yet and is not tested here.
 
 Two modules of tests: the default (test-wrapped) ones, and the
 transaction=True ones, which need real commits and a second connection."""

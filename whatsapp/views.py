@@ -24,6 +24,22 @@ class SenderWriteRateThrottle(UserRateThrottle):
     scope = "whatsapp_sender_write"
 
 
+class SignupRateThrottle(UserRateThrottle):
+    scope = "whatsapp_signup"
+
+
+class EmbeddedSignupStartView(APIView):
+    """POST /whatsapp/embedded-signup/start (spec 08-whatsapp-embedded-signup).
+    OWNER and ADMIN only. Returns the single-use state once; 503 while the
+    feature flag is off or its configuration is unset. No Meta call."""
+
+    permission_classes = [IsOwnerOrAdmin]
+    throttle_classes = [SignupRateThrottle]
+
+    def post(self, request):
+        return Response(services.begin_embedded_signup(actor=request.user))
+
+
 class SendersView(APIView):
     def get(self, request):
         paginator = CursorPagination()

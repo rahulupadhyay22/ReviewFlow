@@ -158,7 +158,7 @@ Session auth + CSRF only. Provider identifiers (`phone_number_id`, `business_acc
 - **Response**: `201` the template as `PENDING`; it is submitted to Meta after commit and approval is polled.
 - **Errors**: `422` validation; `409` duplicate `(name, language)`; `503 whatsapp_not_configured` when there is no `ACTIVE` shared sender or the platform token is unset; `429` too many template creations (per-user `WHATSAPP_TEMPLATE_WRITE_RATE`, default `10/min`), because every template is submitted to the one shared Meta WABA
 
-### Own-number onboarding *(spec 08-whatsapp-embedded-signup; decisions approved 2026-10-09. Not built yet. Once built, it is unavailable while `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` is off, which is the default until the production-readiness gates pass)*
+### Own-number onboarding *(spec 08-whatsapp-embedded-signup; decisions approved 2026-10-09. `POST /whatsapp/embedded-signup/start` is implemented; `POST /whatsapp/embedded-signup/complete` is not implemented yet and is blocked on unverified Meta evidence. While `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` is off, which is the default until the production-readiness gates pass, `start` answers `503 whatsapp_not_configured`)*
 
 Session + CSRF. Merchant from the session only; any `merchant_id`, `business_id`, `location_id` or `sender_type` in a body is ignored. Codes, tokens, PINs, `phone_number_id` and `business_account_id` are never returned.
 
