@@ -132,6 +132,34 @@ def rls_replace_select_by_billing_ref(table, *, old_columns, new_columns):
     )
 
 
+CURRENT_WHATSAPP_PHONE_NUMBER_ID = (
+    "NULLIF(current_setting('app.current_whatsapp_phone_number_id', true), '')"
+)
+
+
+def rls_select_by_phone_number_id(table):
+    """SELECT-only whatsapp_number_lookup policy (pre-tenant inbound STOP
+    lookup of an own-number account, see
+    core.tenancy.whatsapp_number_lookup_atomic). Spec
+    08-whatsapp-embedded-signup ES-3 (LOCKED DECISION CHANGE, approved
+    2026-10-09), exactly as written there. Run after rls_shared_pool(), which
+    enables and forces RLS. Never add a write policy keyed on
+    app.current_whatsapp_phone_number_id.
+
+    The predicate is an equality on one validated value: at most one
+    OWN_NUMBER row (UNIQUE(provider, phone_number_id)), never the shared row,
+    and an unset or empty setting matches nothing (NULLIF -> NULL).
+    """
+    return migrations.RunSQL(
+        sql=(
+            f"CREATE POLICY whatsapp_number_lookup ON {table} FOR SELECT "
+            f"USING (sender_type = 'OWN_NUMBER' AND provider = 'meta_cloud' "
+            f"AND phone_number_id = {CURRENT_WHATSAPP_PHONE_NUMBER_ID});"
+        ),
+        reverse_sql=f"DROP POLICY whatsapp_number_lookup ON {table};",
+    )
+
+
 def rls_via_parent(table, fk_column, parent_table):
     """Policy for tables reaching the tenant through a parent FK.
 

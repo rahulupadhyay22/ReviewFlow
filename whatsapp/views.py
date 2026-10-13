@@ -20,11 +20,32 @@ class TemplateWriteRateThrottle(UserRateThrottle):
     scope = "whatsapp_template_write"
 
 
+class SenderWriteRateThrottle(UserRateThrottle):
+    scope = "whatsapp_sender_write"
+
+
 class SendersView(APIView):
     def get(self, request):
         paginator = CursorPagination()
         page = paginator.paginate_queryset(services.list_senders(), request, view=self)
         return paginator.get_paginated_response(SenderSerializer(page, many=True).data)
+
+
+class SenderDetailView(APIView):
+    """DELETE /whatsapp/senders/{id}: disconnect an own number (spec
+    08-whatsapp-embedded-signup ES-5). OWNER and ADMIN only. Local only: no
+    Meta call, never a deregister."""
+
+    permission_classes = [IsOwnerOrAdmin]
+    # Per-user limit (WHATSAPP_SENDER_WRITE_RATE): a disconnect is local-only
+    # and idempotent, so this only bounds repeated calls and audit-adjacent
+    # writes.
+    throttle_classes = [SenderWriteRateThrottle]
+
+    def delete(self, request, pk):
+        account = services.get_sender(pk)  # 404 for an unknown or invisible id
+        services.disconnect_own_number(account=account, actor=request.user)
+        return Response(status=204)
 
 
 class LocationSenderView(APIView):

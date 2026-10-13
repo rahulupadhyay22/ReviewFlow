@@ -81,6 +81,33 @@ Razorpay sends every billing webhook to one account-level URL. The request carri
 - There is no platform DELETE policy, so the shared row can never be deleted.
 - The write is audited: `auditlog_auditlog` gains one INSERT-only policy, `platform_insert` (`merchant_id IS NULL` and `app.platform_write` set), used by `auditlog.services.record_platform`. No SELECT, UPDATE or DELETE policy is added, so platform audit rows stay invisible to tenants and immutable. The existing `tenant_isolation` policy is unchanged.
 - Unchanged: the `NOSUPERUSER NOBYPASSRLS` application role, `FORCE ROW LEVEL SECURITY`, and the four lookup policies above. No `SECURITY DEFINER` function is used.
+- A seventh, SELECT-only policy, `whatsapp_number_lookup`, was approved for this table on 2026-10-09 (spec 08-whatsapp-embedded-signup ES-3; see below). It lands with that spec's implementation. The six policies above are unchanged by it.
+
+#### WhatsApp own-number lookup — `whatsapp_number_lookup` (APPROVED 2026-10-09 — spec 08-whatsapp-embedded-signup ES-3, LOCKED DECISION CHANGE signed off by the user; any widening needs fresh sign-off)
+
+A customer's STOP to a merchant's own WhatsApp number arrives on Meta's single app-level callback. The payload names only the `phone_number_id`, and the merchant may never be taken from the payload. The merchant is known only after the `OWN_NUMBER` `WhatsAppAccount` row for that number is read. `whatsapp_whatsappaccount` therefore carries a seventh PERMISSIVE policy, **SELECT-only**:
+
+```sql
+CREATE POLICY whatsapp_number_lookup ON whatsapp_whatsappaccount
+  FOR SELECT
+  USING (
+    sender_type = 'OWN_NUMBER'
+    AND provider = 'meta_cloud'
+    AND phone_number_id = NULLIF(current_setting('app.current_whatsapp_phone_number_id', true), '')
+  );
+```
+
+- `app.current_whatsapp_phone_number_id` is set only by `SET LOCAL` inside `core.tenancy.whatsapp_number_lookup_atomic()`:
+  - transaction-local, never session-level, and fail-closed when unset (NULLIF → matches nothing);
+  - the id is validated as `^[0-9]{1,64}$` (fullmatch) before use;
+  - refused while a merchant context is active, because PERMISSIVE policies are ORed;
+  - always its own outermost (`durable=True`) transaction.
+- It is used only by the inbound opt-out fan-out task, for pairs taken from a delivery whose Meta signature has already been verified. The webhook view never performs it, and it is never used in a request path.
+- No write policy is keyed on `app.current_whatsapp_phone_number_id`. Inside the block no merchant context and no `app.platform_write` is set, so every INSERT, UPDATE and DELETE still fails the six existing policies.
+- At most one row matches: an equality on one value under `UNIQUE(provider, phone_number_id)`, and only an `OWN_NUMBER` row. The lookup cannot enumerate tenants: no other merchant's own number is ever visible through it. The `SHARED_POOL` row is readable inside the lookup, as it is anywhere, through the existing `tenant_read` policy (`merchant_id IS NULL`, with or without a tenant context); the new policy adds only the one matching own number and changes nothing about that row.
+- The application layer mirrors it. `WhatsAppAccount.objects.for_lookup_phone_number_id(id)` is the only merchant-unscoped own-number read; it works only inside that block for that same id, and selects `merchant_id` only. RLS cannot hide columns, so the row's `access_token_enc` ciphertext is technically readable inside the block. The application never selects it, and it is Fernet-encrypted.
+- After the lookup, the opt-out runs under that merchant's own `tenant_context` and `tenant_isolation` as usual.
+- Unchanged: the six Change 1 policies, the four lookups above, `FORCE ROW LEVEL SECURITY`, the `NOSUPERUSER NOBYPASSRLS` role. No `SECURITY DEFINER` function is used, and `platform_write_atomic` is not used.
 
 ### No Standing Privileged Role
 

@@ -550,7 +550,8 @@ All endpoints follow the General Conventions:
   - **Inbound messages:** only opt-out processing. For each message it
     extracts only (`phone_number_id`, sender phone, text), and for each
     whole-message keyword match enqueues `fan_out_inbound_opt_out`. It
-    returns `200` fast and makes no database query.
+    returns `200` fast and makes no database query. **(Amended
+    2026-10-12, A-1: if the publish fails it answers `503` instead.)**
   - **Status notifications:** acknowledged with `200` and discarded.
     They are **not persisted**, not logged beyond a count, and trigger
     no `WhatsAppMessage`, `CampaignExecution`, dispatch or Phase 11
@@ -714,7 +715,9 @@ All functions run in the caller's tenant context unless noted, and raise
     `SHARED_POOL` account.
   - Called by the fan-out task.
 
-**Inbound flow under OD-1 (b):**
+**Inbound flow under OD-1 (b)** (steps 2 and 3 are superseded by
+Amendment A-1, 2026-10-12: the opt-out now runs inline per merchant, with
+failures collected and retried):
 
 1. The view verifies the signature, parses the delivery and, for each
    STOP, enqueues `fan_out_inbound_opt_out(phone_number_id, phone)`.
@@ -773,7 +776,7 @@ under that merchant's own RLS context.
 | `sync_merchant_templates(merchant_id)` | `default` | explicit `merchant_id` | `@tenant_task`; calls `sync_template_statuses()` |
 | `monitor_shared_pool_quality()` | `default` | none | Platform-level; reads no tenant table except the GLOBAL shared row |
 | `fan_out_inbound_opt_out(phone_number_id, phone)` | `whatsapp` | none (platform) | OD-1 (b) fan-out, see "Inbound flow". Reads only the GLOBAL shared row and `Merchant` ids outside a tenant context; all tenant reads happen inside each merchant's own context. Idempotent: running it again re-enqueues only no-op opt-outs. The same phone-logging rule as below applies |
-| `process_inbound_opt_out(merchant_id, phone)` | `whatsapp` | explicit `merchant_id` | Enqueued once per matching merchant (OD-1 (b)); `@tenant_task`; calls `opt_out_customer(phone=…, source=INBOUND_KEYWORD)`; idempotent. **The phone is a task argument:** the Celery task args log level must not print it (existing worker logging config is checked, and the arg is never interpolated into a log line) |
+| `process_inbound_opt_out(merchant_id, phone)` | `whatsapp` | explicit `merchant_id` | **No longer enqueued by the fan-out (Amendment A-1); kept for a manual re-drive.** Originally: enqueued once per matching merchant (OD-1 (b)); `@tenant_task`; calls `opt_out_customer(phone=…, source=INBOUND_KEYWORD)`; idempotent. **The phone is a task argument:** the Celery task args log level must not print it (existing worker logging config is checked, and the arg is never interpolated into a log line) |
 
 Template polling and quality polling use the `default` queue so that
 slow Meta management calls never compete with `whatsapp` sends (SAD.md
@@ -1141,6 +1144,7 @@ task boundary is crossed, unless stated otherwise.
       persisted.
 - [ ] A valid signed STOP → `200`, and the view itself executes **no**
       database query. Exactly one `fan_out_inbound_opt_out` is enqueued.
+      (With the broker down it answers `503`; see Amendment A-1.)
 - [ ] **Duplicate webhook:** the same signed STOP delivery posted 5 times
       → each matching customer is opted out once (`opted_out_at`
       unchanged after the first), with no error.
@@ -1243,6 +1247,134 @@ task boundary is crossed, unless stated otherwise.
   in the docs.
 - Staff-gated Django Admin writes for the shared account: Phase 16.
 - Invalid-signature spike alerting: Phase 18.
+
+## Amendment A-1 (2026-10-12, user-approved): STOP reliability
+
+**Status: APPROVED by the user on 2026-10-12.** It supersedes the
+statements named below and nothing else. Every other decision of this
+spec, including OD-1 (b), the signature-first rule and "the view makes no
+database query", is unchanged.
+
+**Why.** Before this amendment a broker failure was swallowed and the
+delivery still answered `200`. Meta never redelivers a `200`, so a STOP was
+silently lost (WhatsApp-Meta.md M-11). The same swallow existed between the
+fan-out and the per-merchant task, and a failure for one merchant was logged
+and dropped.
+
+**1. Webhook response contract (supersedes "returns `200` fast").**
+- The signature is still verified first (`401` fail closed) and the view
+  still makes **no** database query.
+- For each whole-message opt-out keyword the receiver publishes one
+  `fan_out_inbound_opt_out(phone_number_id, phone)`. If a publish fails it
+  **stops at once**, logs the exception class only, and answers
+  **`503`** with the standard error body. Meta then redelivers the delivery
+  (M-11).
+- A delivery with no opt-out keyword, or with only status notifications,
+  never touches the broker and still answers `200`, exactly as before.
+- Redelivery can repeat STOPs that were already published. That is
+  harmless: every step is idempotent (`opted_out_at` keeps the first time).
+- Meta's response timeout is not documented (M-11), so a slow `503` is
+  indistinguishable from a failure to Meta; both lead to redelivery.
+
+**2. Inline per-merchant fan-out (supersedes "Inbound flow" steps 2 and 3
+and the `on_commit` enqueue of `process_inbound_opt_out`).**
+- For the shared number, the task iterates the non-`DELETED` merchant ids.
+  Under each merchant's own `tenant_context` + one `tenant_atomic` it runs
+  `shared_opt_out_applies(phone)` and, when true, `opt_out_customer(...)`
+  in the **same** transaction. There is no second broker hop.
+- For an own number (Embedded Signup spec, ES-3) the owning merchant is
+  resolved through the lookup and the opt-out runs inline the same way.
+- **Every merchant is attempted.** A merchant that fails is recorded (merchant
+  id and exception class only; never the phone) and the loop continues.
+- After the loop, if any merchant failed, the task schedules a **bounded
+  retry restricted to the failed merchant ids** (at most 5 retries,
+  exponential backoff with jitter). Nothing is dropped silently: when the
+  retries are exhausted the task logs one error-level event,
+  `whatsapp.optout_fanout_exhausted`, with the count and merchant ids.
+- `process_inbound_opt_out(merchant_id, phone)` is no longer enqueued by the
+  fan-out. It stays as an idempotent, tenant-scoped task for a manual
+  re-drive.
+
+**3. Worker-loss settings.** `fan_out_inbound_opt_out` and
+`process_inbound_opt_out` run with `acks_late=True` and
+`reject_on_worker_lost=True`. This is safe because both are idempotent.
+
+What that does, from reading the installed Celery 5.6.3 and kombu source
+(**not** an observed kill test; the repository's tests run Celery eagerly
+and cannot show it):
+- **A pool child process dies while the worker lives:** Celery rejects the
+  message with `requeue=True` and kombu puts it back at once.
+- **The whole worker process is killed:** no handler runs, so the message
+  stays in Redis as unacknowledged and is restored only when it is older than
+  the broker `visibility_timeout`. ReviewFlow does not override it, and the
+  kombu Redis default is 3600 s, so the redelivery can take up to about one
+  hour. A graceful shutdown restores its unacknowledged messages at once.
+- **A task that raises** is acknowledged (the default
+  `acks_on_failure_or_timeout`), not redelivered. Failures are therefore
+  handled by the explicit bounded `retry` in section 2, and a `retry`
+  publishes a new message, so it also needs the broker.
+
+**4. Sizing (measured 2026-10-12, local PostgreSQL 16).** About 3.7 ms per
+merchant that does not apply and about 11.6 ms per merchant that does. The
+loop already ran per merchant before this amendment; inlining adds only the
+conditional UPDATE for matching merchants. It runs in the worker, not in the
+webhook request, whose cost is signature check plus publish.
+
+**5. Known limitation (not solved by this amendment).** The design is not
+durable. The broker is not a source of truth, so a STOP whose queued message
+is lost from Redis after a successful publish (restart, eviction) is not
+recovered, a Celery retry itself needs the broker, and after a hard kill of
+the whole worker a queued STOP waits for the visibility timeout (section 3). A durable inbox in the
+database would close this, but it conflicts with this spec's "the view makes
+no database query" and "nothing from the payload is persisted" rules, and
+would need new RLS and retention decisions. It was assessed and not adopted.
+
+**Definition of done (added):**
+- [ ] A signed STOP whose publish fails answers `503`, with zero database
+      queries and no phone number in any log record.
+- [ ] A delivery with no keyword, or only statuses, answers `200` and makes
+      no broker call, even while the broker is down.
+- [ ] An invalid signature answers `401` before any broker call.
+- [ ] A mixed batch stops at the first failed publish and answers `503`.
+- [ ] After the broker recovers, redelivering the same delivery opts the
+      customer out exactly once (`opted_out_at` unchanged on repeats).
+- [ ] One failing merchant does not prevent the others from being opted out
+      in the same run, and the failure is retried, not dropped.
+- [ ] The retry is restricted to the failed merchants, is bounded, and
+      exhaustion is logged without a phone number.
+- [ ] Own-number STOPs use the same inline, retried path.
+- [ ] Tenant isolation: Merchant A's STOP never changes Merchant B's
+      customer with the same phone.
+
+### A-1 follow-up (2026-10-13, user-approved quality fixes)
+
+- **Bounded publish.** The webhook publishes through
+  `tasks.publish_opt_out_fan_out`: a dedicated connection with
+  `connect_timeout` and socket timeouts of
+  `WHATSAPP_WEBHOOK_PUBLISH_CONNECT_TIMEOUT` (default 2.0 s) and a publish
+  retry of `WHATSAPP_WEBHOOK_PUBLISH_MAX_RETRIES` (default 1).
+  **`fan_out_inbound_opt_out` must keep `ignore_result=True`** (nothing reads
+  its result; a regression test pins it): without it Celery subscribes through
+  the result backend's own client during the publish, which those options do
+  not reach. Measured 2026-10-13 with a non-eager publish: broker only
+  unreachable, Celery defaults 4.5 s (refused) / 21 s (black hole); broker AND
+  result backend unreachable, 64 s without `ignore_result` and 2.0-2.4 s with
+  it; a backend socket timeout alone did not help (63 s). Computed ceiling
+  `(retries + 1) * timeout + retries * 0.2` s was not observed, and DNS
+  resolution of a hostname is not covered. A short, tested bound, not a
+  guarantee. Meta's response timeout remains undocumented (M-11).
+  Consequence of `ignore_result`: a failed run is not also stored as FAILURE
+  in Redis; the worker log and the module's own error lines are the record.
+- **Target resolution** (shared number vs own number vs unknown) moved from the
+  task body to `services.resolve_inbound_opt_out_targets`. Behaviour is
+  unchanged; a lookup failure is still retried, never read as "unknown".
+- The retry helper is annotated `NoReturn`, and the exhaustion log lists at most
+  20 merchant ids plus the full count.
+- **Sanitized lookup failure.** A failed target lookup is retried and, at the
+  bound, raised as `OptOutTargetLookupFailed`, which carries only the original
+  exception's class name (never its text) and no chained cause, so database or
+  driver details cannot reach Celery's retry or failure logs.
+- Not changed: no Redis de-duplication of repeated STOPs (not adopted).
 
 ## Open Decisions
 

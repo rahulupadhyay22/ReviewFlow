@@ -60,6 +60,23 @@ All three share one PostgreSQL database, tied together by `merchant_id`/`locatio
 
 Django never talks to WhatsApp/Google synchronously in a request-response cycle (except short read-only dashboard calls); all sends and syncs happen through Celery.
 
+> **Exception (APPROVED 2026-10-09 — spec 08-whatsapp-embedded-signup ES-4, LOCKED DECISION CHANGE signed off by the user; any widening needs fresh sign-off).** `POST /whatsapp/embedded-signup/complete` may make exactly three synchronous Meta Graph API calls inside the request, and no other:
+>
+> 1. exchange the Embedded Signup code for the merchant's business token;
+> 2. read the WABA's phone numbers to confirm the selected number belongs to it;
+> 3. register the number with the merchant-entered PIN.
+>
+> Reasons: Meta gives the code a 30-second lifetime (`../05-integrations/WhatsApp-Meta.md` E-2a), so it cannot wait in a queue. The PIN must not be persisted or placed in a task argument.
+>
+> The rules for these calls:
+>
+> - each call runs outside any database transaction or row lock, with a strict per-call timeout (the provider's fixed 10-second timeout);
+> - none is retried automatically;
+> - a failure ends the request with a fixed error that contains no secret, and the merchant restarts Embedded Signup;
+> - the calls run only after the server-side signup state has been validated: bound to the session's merchant and user, unexpired and single-use.
+>
+> All other Meta work stays in Celery, including subscribing the app to the WABA, template submission and sending. No other endpoint gains a synchronous non-read-only Meta call.
+
 ## Foundational Decisions (locked)
 
 1. **Multi-tenancy**: shared PostgreSQL schema, `merchant_id` scoping, application-level `TenantScopedManager` + Postgres RLS as defense-in-depth. See `Multi-Tenancy.md`.

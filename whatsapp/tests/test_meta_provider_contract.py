@@ -330,11 +330,6 @@ def test_template_submission_failures_are_classified_too(meta_http):
         provider.submit_template(account(), template())
 
 
-def test_register_number_is_declared_but_not_implemented():
-    with pytest.raises(NotImplementedError):
-        provider.register_number(None, None)
-
-
 # --- get_provider_by_name ---------------------------------------------------------------
 
 

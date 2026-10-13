@@ -17,12 +17,16 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 
+from cryptography.fernet import InvalidToken
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
+from core.crypto import decrypt
 from integrations.core.schemas import verify_hmac_sha256
 from whatsapp.exceptions import WhatsAppNotConfigured
 from whatsapp.providers.base import (
     InboundMessage,
+    ProviderCredential,
     ProviderPermanentError,
     ProviderSendResult,
     ProviderTransientError,
@@ -67,8 +71,29 @@ def named_examples(body: str) -> list[dict]:
     return out
 
 
-def _request(method: str, path: str, body: dict | None = None, *, operation: str) -> dict:
-    token = settings.META_SHARED_POOL_ACCESS_TOKEN
+def _token_for(account) -> str:
+    """The Meta token to call with for this account. A SHARED_POOL account
+    uses the platform env token, unchanged. An OWN_NUMBER account uses its
+    merchant's decrypted business token (spec 08-whatsapp-embedded-signup
+    ES-1). Missing, undecryptable or an unset FERNET_KEY all fail closed as
+    WhatsAppNotConfigured: there is never a plaintext fallback, and nothing in
+    the error names the token or the key."""
+    if account.sender_type == account.SenderType.SHARED_POOL:
+        token = settings.META_SHARED_POOL_ACCESS_TOKEN
+    else:
+        ciphertext = account.access_token_enc
+        if not ciphertext:
+            raise WhatsAppNotConfigured()
+        try:
+            token = decrypt(ciphertext)
+        except (InvalidToken, ImproperlyConfigured):
+            raise WhatsAppNotConfigured() from None
+    if not token:
+        raise WhatsAppNotConfigured()
+    return token
+
+
+def _request(method: str, path: str, body: dict | None = None, *, operation: str, token: str) -> dict:
     if not token:
         raise WhatsAppNotConfigured()
     base = f"https://graph.facebook.com/{settings.META_GRAPH_API_VERSION}"
@@ -165,6 +190,7 @@ class MetaCloudProvider(WhatsAppProvider):
                 "components": components,
             },
             operation="template submit",
+            token=_token_for(account),
         )
         template_id = result.get("id")
         if not template_id:
@@ -199,6 +225,7 @@ class MetaCloudProvider(WhatsAppProvider):
                 "GET",
                 f"/{_quote(account.business_account_id)}/message_templates?{urllib.parse.urlencode(query)}",
                 operation="template lookup",
+                token=_token_for(account),
             )
             for item in page.get("data") or []:
                 if isinstance(item, dict) and item.get("name") == name and item.get("language") == template.language:
@@ -215,7 +242,12 @@ class MetaCloudProvider(WhatsAppProvider):
         raise ProviderTransientError("The WhatsApp template lookup was inconclusive.")
 
     def fetch_template_status(self, account, provider_template_id: str) -> TemplateStatus:
-        status = _request("GET", f"/{_quote(provider_template_id)}?fields=status", operation="template status").get("status")
+        status = _request(
+            "GET",
+            f"/{_quote(provider_template_id)}?fields=status",
+            operation="template status",
+            token=_token_for(account),
+        ).get("status")
         if status == "APPROVED":
             return TemplateStatus("APPROVED")
         if status in _REJECTED_STATES:
@@ -227,6 +259,7 @@ class MetaCloudProvider(WhatsAppProvider):
             "GET",
             f"/{_quote(account.business_account_id)}/phone_numbers?fields=id,quality_rating",
             operation="quality rating",
+            token=_token_for(account),
         )
         for number in result.get("data") or []:
             if isinstance(number, dict) and number.get("id") == account.phone_number_id:
@@ -252,11 +285,43 @@ class MetaCloudProvider(WhatsAppProvider):
                 },
             },
             operation="send",
+            token=_token_for(account),
         )
         messages = result.get("messages") or []
         if not messages or not isinstance(messages[0], dict) or not messages[0].get("id"):
             raise ProviderTransientError("The WhatsApp provider returned an unreadable response.")
         return ProviderSendResult(str(messages[0]["id"]))
 
-    def register_number(self, merchant, number):
-        raise NotImplementedError("OWN_NUMBER registration is the 08-whatsapp-embedded-signup spec.")
+    def register_number(self, credential: ProviderCredential, phone_number_id: str, pin: str) -> None:
+        """POST /{phone_number_id}/register with the merchant's two-step PIN
+        (WhatsApp-Meta.md E-6a, VERIFIED). Called inline from the Embedded
+        Signup completion with the in-memory credential (the ES-4 exception)
+        and never retried automatically: Meta allows 10 register calls per
+        number per 72 hours (E-6c). Whether registering an already-registered
+        number is harmless is unverified (E-6e).
+
+        The PIN is only a request-body value here: it is not logged, not part
+        of any exception text, and not kept."""
+        result = _request(
+            "POST",
+            f"/{_quote(phone_number_id)}/register",
+            {"messaging_product": "whatsapp", "pin": pin},
+            operation="register number",
+            token=credential.access_token,
+        )
+        if result.get("success") is not True:
+            raise ProviderTransientError("The WhatsApp provider returned an unreadable response.")
+
+    def subscribe_app(self, account) -> None:
+        """POST /{WABA}/subscribed_apps with the account's own token
+        (WhatsApp-Meta.md E-5a, VERIFIED endpoint and response). Subscribing
+        an app that is already subscribed is expected to be harmless but is
+        not documented."""
+        result = _request(
+            "POST",
+            f"/{_quote(account.business_account_id)}/subscribed_apps",
+            operation="subscribe app",
+            token=_token_for(account),
+        )
+        if result.get("success") is not True:
+            raise ProviderTransientError("The WhatsApp provider returned an unreadable response.")

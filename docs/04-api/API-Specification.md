@@ -131,7 +131,7 @@ Session auth + CSRF only. Provider identifiers (`phone_number_id`, `business_acc
 
 ### `GET /whatsapp/senders`
 - **Permissions**: any role
-- **Response**: `200 { results: [Sender], next_cursor }`. The merchant's own `OWN_NUMBER` accounts plus the shared account when it is `ACTIVE`.
+- **Response**: `200 { results: [Sender], next_cursor }`. The merchant's own `OWN_NUMBER` accounts in **every** status (`ACTIVE`, `PENDING`, `SUSPENDED`), plus the shared account only when it is `ACTIVE`. Whether a sender can be selected is decided by `PUT /locations/{id}/whatsapp-sender`, which refuses a non-`ACTIVE` account with `422` (spec 08-whatsapp-embedded-signup ES-9).
 
 ### `GET /locations/{id}/whatsapp-sender`
 - **Permissions**: any role; a MANAGER gets `404` for an unassigned location, as for `GET /locations/{id}`
@@ -141,7 +141,7 @@ Session auth + CSRF only. Provider identifiers (`phone_number_id`, `business_acc
 - **Permissions**: OWNER, ADMIN, or a MANAGER assigned to the location
 - **Request**: `{ whatsapp_account_id }`
 - **Response**: `200 { sender }`. Idempotent: repointing to the same account changes and audits nothing. A change writes `whatsapp.sender_changed` (`from_sender_type`, `to_sender_type` only).
-- **Errors**: `404` unknown/foreign location, or an account id that does not exist or is not visible to the caller (another merchant's `OWN_NUMBER`); `422` a `PENDING` or `SUSPENDED` account the caller can see by id (its own `OWN_NUMBER`, or the shared account), or an account that cannot serve this location. `GET /whatsapp/senders` still lists only selectable (`ACTIVE`) senders, and a `422` never reveals an account the caller cannot see.
+- **Errors**: `404` unknown/foreign location, or an account id that does not exist or is not visible to the caller (another merchant's `OWN_NUMBER`); `422` a `PENDING` or `SUSPENDED` account the caller can see by id (its own `OWN_NUMBER`, or the shared account), or an account that cannot serve this location. A `422` never reveals an account the caller cannot see.
 
 ### `DELETE /locations/{id}/whatsapp-sender`
 - **Permissions**: as `PUT`
@@ -154,9 +154,46 @@ Session auth + CSRF only. Provider identifiers (`phone_number_id`, `business_acc
 
 ### `POST /whatsapp/templates`
 - **Permissions**: OWNER, ADMIN
-- **Request**: `{ name, language, body }`. `body` may use only `{{customer_name}}`, `{{business_name}}`, `{{location_name}}`, `{{review_link}}` and must include `{{business_name}}`.
+- **Request**: `{ name, language, body }`. `body` may use only `{{customer_name}}`, `{{business_name}}`, `{{location_name}}`, `{{review_link}}`. A template for the shared-pool WABA (every template today) must include `{{business_name}}` (Business-Rules §9). A template bound to a merchant's own number is not required to include it (spec 08-whatsapp-embedded-signup, approved 2026-10-09); own-number templates are not accepted until E-7b is verified.
 - **Response**: `201` the template as `PENDING`; it is submitted to Meta after commit and approval is polled.
 - **Errors**: `422` validation; `409` duplicate `(name, language)`; `503 whatsapp_not_configured` when there is no `ACTIVE` shared sender or the platform token is unset; `429` too many template creations (per-user `WHATSAPP_TEMPLATE_WRITE_RATE`, default `10/min`), because every template is submitted to the one shared Meta WABA
+
+### Own-number onboarding *(spec 08-whatsapp-embedded-signup; decisions approved 2026-10-09. Not built yet. Once built, it is unavailable while `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` is off, which is the default until the production-readiness gates pass)*
+
+Session + CSRF. Merchant from the session only; any `merchant_id`, `business_id`, `location_id` or `sender_type` in a body is ignored. Codes, tokens, PINs, `phone_number_id` and `business_account_id` are never returned.
+
+#### `POST /whatsapp/embedded-signup/start`
+- **Permissions**: OWNER, ADMIN
+- **Response**: `200 { state, app_id, config_id }`. Records a single-use, time-limited signup state server-side, bound to the merchant and user. Only its SHA-256 hash is stored (`EmbeddedSignupState`), never the plaintext or the session.
+- **Errors**: `503 whatsapp_not_configured` (feature flag off, or Meta app or encryption configuration unset); `429` (`WHATSAPP_SIGNUP_RATE`)
+
+#### `POST /whatsapp/embedded-signup/complete`
+- **Permissions**: OWNER, ADMIN
+- **Request**: `{ state, code, business_account_id, phone_number_id, pin }`.
+  - `code` comes from the Embedded Signup login callback.
+  - The two ids come from Meta's `WA_EMBEDDED_SIGNUP` browser event (`../05-integrations/WhatsApp-Meta.md` E-1b).
+  - `pin` is the number's 6-digit two-step PIN. It is used once for registration and never stored.
+  - Must be sent within the code's 30-second lifetime (E-2a).
+- **Response**: `202 { sender }`, with the sender `PENDING`. It becomes `ACTIVE` after the app is subscribed to the WABA in the background.
+- **Errors**:
+  - `400 embedded_signup_invalid`: missing, expired, already-used, or other-user/other-merchant state, or a malformed id. A state is consumed atomically before any Meta call, at most once even under concurrent requests, and is never restored after a later failure;
+  - `422 validation_error`: `pin` is not 6 digits;
+  - `422 embedded_signup_no_phone_number`: no `phone_number_id`, e.g. a WABA-only completion;
+  - `422 embedded_signup_unverified`: Meta refused the code exchange (e.g. an expired or reused code), or the number could not be confirmed as belonging to the WABA;
+  - `409 whatsapp_number_unavailable`: the number is already connected elsewhere. Generic; it names no merchant;
+  - `422 whatsapp_registration_failed`: Meta refused registration, e.g. wrong PIN or its registration limit. The sender stays `PENDING`;
+  - `502 whatsapp_provider_unavailable`;
+  - `503 whatsapp_not_configured`;
+  - `429`.
+- **Retries**: a failed `complete` is never retried with the same code. Recovery is a new Embedded Signup run, which updates the same sender for the same number. It must happen within Meta's 14-day registration window (E-6d).
+
+#### `DELETE /whatsapp/senders/{id}` (disconnect)
+- **Permissions**: OWNER, ADMIN
+- **Response**: `204`, idempotent. The caller's own `OWN_NUMBER` becomes `SUSPENDED` and its stored token is discarded. The number is **not** deregistered and no Meta call is made.
+- **Errors**: `404` for the shared account, another merchant's account, or an unknown id; `409 sender_in_use` while any location is still mapped to it (locations are never unmapped implicitly)
+
+#### Templates on an own number
+`POST /whatsapp/templates` gains an optional `whatsapp_account_id` only once Meta template creation on a customer WABA is verified (E-7b). Until then, naming an own account returns `422`.
 
 ## Customers
 

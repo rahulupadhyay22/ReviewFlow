@@ -22,6 +22,10 @@ class TemplateCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     language = serializers.CharField(max_length=16)
     body = serializers.CharField()
+    # Accepted only so the service can refuse an own-number template with 422
+    # until E-7b is verified; otherwise DRF would silently drop it and create
+    # a shared template.
+    whatsapp_account_id = serializers.UUIDField(required=False, allow_null=True, default=None)
 
 
 class SetSenderSerializer(serializers.Serializer):

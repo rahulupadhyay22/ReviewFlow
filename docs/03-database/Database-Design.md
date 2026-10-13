@@ -111,6 +111,10 @@ Create/Update Transaction
 ### MessageTemplate
 **Purpose**: an approved WhatsApp template's text, variables, and Meta approval status.
 **Tenant ownership**: MERCHANT.
+**WABA binding** *(spec 08-whatsapp-embedded-signup ES-2, approved 2026-10-09)*: nullable `whatsapp_account_id` (NULL = shared-pool WABA). The single `UNIQUE(merchant_id, name, language)` is replaced by two partial unique indexes, which drop no data: `(merchant_id, name, language) WHERE whatsapp_account_id IS NULL`, and `(merchant_id, whatsapp_account_id, name, language) WHERE whatsapp_account_id IS NOT NULL`.
+- Partial indexes are used rather than `NULLS NOT DISTINCT`. That option needs PostgreSQL 15+, and the production version is not recorded; local dev runs 16.
+- Service invariant: the account is the template's own merchant's `OWN_NUMBER` row.
+- RLS is unchanged (`merchant_id`).
 
 ### WhatsAppAccount
 **Purpose**: a WhatsApp sender — either merchant-owned (`OWN_NUMBER`) or platform-owned (`SHARED_POOL`).
@@ -118,11 +122,21 @@ Create/Update Transaction
 **Tenant ownership**: MERCHANT for `OWN_NUMBER` rows; GLOBAL for `SHARED_POOL` rows.
 **RLS**: asymmetric, one policy per command (spec 08 Change 1, signed off 2026-10-07; see `../02-architecture/Multi-Tenancy.md`). Any tenant may read its own rows plus the `merchant_id IS NULL` shared row; a tenant can insert, update or delete only its own `OWN_NUMBER` rows and can never create, edit or convert a shared row. Only a transaction inside `core.tenancy.platform_write_atomic()` can insert or update the shared row; nobody can delete it.
 **Constraints**: `CHECK((sender_type = SHARED_POOL) = (merchant_id IS NULL))`; `UNIQUE(provider, phone_number_id)`; at most one `SHARED_POOL` row in V1 (dropped in V1.1 for rotation).
+**Own-number credential** *(spec 08-whatsapp-embedded-signup ES-1, approved 2026-10-09)*: nullable `access_token_enc` (Fernet), with `CHECK(sender_type = 'OWN_NUMBER' OR access_token_enc IS NULL)`. It is cleared on disconnect, and a row is never `ACTIVE` without it (service rule).
+**Own-number lookup policy** *(ES-3, LOCKED DECISION CHANGE, approved 2026-10-09)*: a seventh, SELECT-only policy, `whatsapp_number_lookup`, for the post-signature inbound STOP lookup. See `../02-architecture/Multi-Tenancy.md`.
 
 ### WhatsAppLocationMapping
 **Purpose**: resolves which `WhatsAppAccount` a given `Location` currently sends from.
 **Unique constraint**: `(location_id)` — a location has exactly one active sender at a time.
 **Tenant ownership**: LOCATION. RLS goes through the location (`EXISTS` on `locations_location`), not the account, because a shared account's `merchant_id` is NULL. The service enforces that the account is `SHARED_POOL` or owned by the location's merchant.
+
+### EmbeddedSignupState
+**Purpose**: the server-side, single-use state of one WhatsApp Embedded Signup attempt *(spec 08-whatsapp-embedded-signup ES-18, approved 2026-10-09)*.
+**Tenant ownership**: MERCHANT. RLS: the standard `rls_direct` `tenant_isolation` policy, ENABLE + FORCE. No lookup or platform policy.
+**Constraints**: `UNIQUE(state_hash)`. Only the SHA-256 of the state is stored, never the plaintext.
+**Consumption**: one conditional `DELETE` (matching `state_hash`, the session user and `expires_at > now()`, under the merchant's RLS), in its own short transaction committed before any Meta call. Under READ COMMITTED a concurrent second delete matches nothing, so at most one request consumes a state. A consumed state is never restored.
+**Cleanup**: expired rows are deleted by the same merchant's next `start`. There is no scheduled purge.
+**Migration**: `whatsapp/migrations/0009_embeddedsignupstate` creates the table and its RLS policy together. Reversing it loses only in-flight signup states.
 
 ### WhatsAppMessage
 **Purpose**: one sent (or attempted) WhatsApp message and its delivery lifecycle.

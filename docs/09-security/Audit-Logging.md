@@ -17,6 +17,12 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 - Campaign activated / deactivated
 - Integration connected / disconnected
 - WhatsApp sender changed (own number ↔ shared pool)
+- WhatsApp own number connected, disconnected or failed activation *(spec 08-whatsapp-embedded-signup ES-8, approved 2026-10-09)*:
+  - `whatsapp.own_number_connected` (metadata `{ reconnect }` only);
+  - `whatsapp.own_number_disconnected` (no metadata);
+  - `whatsapp.own_number_activation_failed` (system event, no actor, no metadata).
+
+  The target is the `WhatsAppAccount`. Metadata never contains an access token, authorization code, PIN, `phone_number_id` or `business_account_id`.
 - Google connection added / reauthorized
 - Billing plan changed; checkout started; cancellation requested
 - Plan-change replacement started, committed (downgrade) or abandoned (`billing.replacement_started`, `billing.replacement_committed`, `billing.replacement_abandoned`); and, for staff, a paid replacement on an ended subscription (`billing.replacement_paid_after_end`, system event, written once). Metadata holds plan names, the plan id and the kind or effect only: never a provider reference, payment id or PII

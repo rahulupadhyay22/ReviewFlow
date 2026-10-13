@@ -124,6 +124,12 @@ REST_FRAMEWORK = {
         # WhatsApp template creation, per user (spec 08 code review): every
         # template is submitted to the one shared Meta WABA.
         "whatsapp_template_write": env("WHATSAPP_TEMPLATE_WRITE_RATE", default="10/min"),
+        # WhatsApp Embedded Signup start/complete, per user (spec
+        # 08-whatsapp-embedded-signup): each completion makes Meta calls.
+        "whatsapp_signup": env("WHATSAPP_SIGNUP_RATE", default="10/min"),
+        # Disconnecting an own WhatsApp number, per user (spec
+        # 08-whatsapp-embedded-signup ES-5).
+        "whatsapp_sender_write": env("WHATSAPP_SENDER_WRITE_RATE", default="10/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
@@ -253,6 +259,28 @@ WHATSAPP_OPT_OUT_KEYWORDS = frozenset({"STOP", "UNSUBSCRIBE"})
 WHATSAPP_TEMPLATE_LANGUAGES = frozenset({"en", "en_US", "hi"})
 # Conservative: Meta allows 1024 characters with other components (gate M-5).
 WHATSAPP_TEMPLATE_BODY_MAX = 1024
+
+# WhatsApp Embedded Signup (spec 08-whatsapp-embedded-signup). The ids are
+# public values the frontend SDK needs; empty defaults fail closed (the start
+# endpoint answers 503). The flag stays False by default: turning it on does
+# not by itself make the feature production ready (spec production gates). A
+# local development-WABA run may override it in an uncommitted .env only.
+META_APP_ID = env("META_APP_ID", default="")
+META_EMBEDDED_SIGNUP_CONFIG_ID = env("META_EMBEDDED_SIGNUP_CONFIG_ID", default="")
+WHATSAPP_EMBEDDED_SIGNUP_ENABLED = env.bool("WHATSAPP_EMBEDDED_SIGNUP_ENABLED", default=False)
+# STOP webhook publish bound (foundation Amendment A-1). Celery's defaults
+# measured 4.5 s (connection refused) to 21 s (black-holed broker) to fail a
+# publish; Meta's response timeout is undocumented (WhatsApp-Meta.md M-11).
+# Tasks that publish through this bound must also set ignore_result=True, or the
+# publish calls the result backend, which these options do not reach (measured
+# 64 s with broker and backend both unreachable).
+# Measured with both unreachable and a 2 s timeout: 2.0-2.4 s. The computed
+# ceiling is (max_retries + 1) * timeout + max_retries * 0.2 s; it was not
+# observed. DNS resolution of a hostname is not bounded by these options.
+WHATSAPP_WEBHOOK_PUBLISH_CONNECT_TIMEOUT = env.float("WHATSAPP_WEBHOOK_PUBLISH_CONNECT_TIMEOUT", default=2.0)
+WHATSAPP_WEBHOOK_PUBLISH_MAX_RETRIES = env.int("WHATSAPP_WEBHOOK_PUBLISH_MAX_RETRIES", default=1)
+# Lifetime of one issued signup state (EmbeddedSignupState.expires_at).
+WHATSAPP_SIGNUP_STATE_MAX_AGE_SECONDS = env.int("WHATSAPP_SIGNUP_STATE_MAX_AGE_SECONDS", default=600)
 CELERY_BEAT_SCHEDULE["whatsapp-template-status"] = {
     "task": "whatsapp.tasks.poll_template_statuses",
     "schedule": WHATSAPP_TEMPLATE_POLL_SECONDS,

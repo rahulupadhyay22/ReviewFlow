@@ -4,7 +4,7 @@ Campaign code never imports a provider: it calls whatsapp.services only. Error
 messages never carry a phone number, token, body or provider response.
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from core.exceptions import ReviewFlowError
@@ -16,6 +16,21 @@ class ProviderTransientError(ReviewFlowError):
 
 class ProviderPermanentError(ReviewFlowError):
     """4xx validation/permission failure: never retried."""
+
+
+@dataclass(frozen=True)
+class ProviderCredential:
+    """A merchant's Meta business token, held in memory only. repr=False keeps
+    the token out of logs, tracebacks and error reports."""
+
+    access_token: str = field(repr=False)
+    expires_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ProviderNumberRef:
+    phone_number_id: str
+    business_account_id: str
 
 
 @dataclass(frozen=True)
@@ -73,4 +88,10 @@ class WhatsAppProvider(ABC):
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool: ...
 
     @abstractmethod
-    def register_number(self, merchant, number): ...
+    def register_number(self, credential: ProviderCredential, phone_number_id: str, pin: str) -> None:
+        """Register a number for the Cloud API with the merchant's two-step PIN.
+        The provider has no database access and never takes a Merchant."""
+
+    @abstractmethod
+    def subscribe_app(self, account) -> None:
+        """Subscribe the platform app to the account's WABA webhooks."""

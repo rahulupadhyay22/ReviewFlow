@@ -48,7 +48,7 @@ def enqueue(monkeypatch):
     from unittest.mock import Mock
 
     mock = Mock()
-    monkeypatch.setattr(tasks.fan_out_inbound_opt_out, "delay", mock)
+    monkeypatch.setattr(tasks, "publish_opt_out_fan_out", mock)
     return mock
 
 
