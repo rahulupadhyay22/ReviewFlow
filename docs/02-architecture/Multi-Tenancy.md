@@ -77,7 +77,12 @@ Razorpay sends every billing webhook to one account-level URL. The request carri
 | `platform_update` | UPDATE | same predicate, as `USING` and `WITH CHECK` |
 
 - `app.platform_write` is set only by `SET LOCAL` inside `core.tenancy.platform_write_atomic(scope)`: transaction-local, fail-closed when unset, scope-allowlisted, refused while a merchant context is active (PERMISSIVE policies are ORed), and always its own outermost (`durable=True`) transaction.
-- It is management infrastructure only: its sole caller is `whatsapp.services.upsert_shared_pool_account`, itself called only by the `configure_shared_pool` command and `seed_dev`. It is never used from a view, serializer, tenant service, task or admin, and there is no API path that creates the shared row.
+- It is management infrastructure only. For the scope `whatsapp_shared_pool`, its sole caller is `whatsapp.services.upsert_shared_pool_account`, itself called only by the `configure_shared_pool` command and `seed_dev`. There is no API path that creates the shared row.
+- **Scope `staff_auth` (APPROVED 2026-10-13: spec 16-internal-admin LC-1, LOCKED DECISION CHANGE signed off by the user; any widening needs fresh sign-off).** It exists only so staff (Django Admin) two-factor events can write their platform audit rows (`merchant_id` NULL) through `record_platform()`. Exactly two callers may open it:
+  - `accounts.services.confirm_staff_totp_setup` (the `enroll_staff_totp` command);
+  - the recovery-code branch of `accounts.services.verify_staff_admin_login`, which runs from the admin login form. A six-digit TOTP code never opens it.
+
+  A test pins these two call sites. No policy changed for it: the audit table's `platform_insert` already accepts any non-empty `app.platform_write` for a NULL-merchant row, while the shared-sender `platform_insert`/`platform_update` below require the literal `'whatsapp_shared_pool'`, so `staff_auth` can never insert, update or delete the shared row. No other view, serializer, tenant service, task or admin code uses `platform_write_atomic`.
 - There is no platform DELETE policy, so the shared row can never be deleted.
 - The write is audited: `auditlog_auditlog` gains one INSERT-only policy, `platform_insert` (`merchant_id IS NULL` and `app.platform_write` set), used by `auditlog.services.record_platform`. No SELECT, UPDATE or DELETE policy is added, so platform audit rows stay invisible to tenants and immutable. The existing `tenant_isolation` policy is unchanged.
 - Unchanged: the `NOSUPERUSER NOBYPASSRLS` application role, `FORCE ROW LEVEL SECURITY`, and the four lookup policies above. No `SECURITY DEFINER` function is used.
@@ -112,6 +117,8 @@ CREATE POLICY whatsapp_number_lookup ON whatsapp_whatsappaccount
 ### No Standing Privileged Role
 
 The application's normal database role has RLS enforced on it with **no bypass** — there is no `BYPASSRLS`/superuser connection string sitting in ordinary settings, even for the admin panel. Cross-merchant admin/billing-rollup access goes through an explicit, narrowly-scoped, audited privileged service path (a management command or admin-only endpoint with staff auth and audit logging on every use) — never a different, permanently-unrestricted connection.
+
+That path is `auditlog.services.staff_merchant_read` *(spec 16-internal-admin)*. Staff select one merchant at a time. The function commits a `staff.merchant_data_viewed` audit row in one durable `tenant_atomic`, then yields a second durable `tenant_atomic` for the read, both under that merchant's own `tenant_context`, so RLS applies exactly as for the merchant. No new policy, role or connection is involved. It refuses non-staff users, an active tenant context and nesting inside another transaction. Django Admin requests are never wrapped in a dashboard session's tenant context.
 
 ## Two Points Hardened After Architecture Review
 

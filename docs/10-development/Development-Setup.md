@@ -57,8 +57,11 @@ The payment gateway is Razorpay. The three `RAZORPAY_*` values are read by the b
 pip install -r requirements.txt   # or poetry/uv equivalent
 python manage.py migrate
 python manage.py createsuperuser  # for Django Admin access
+python manage.py enroll_staff_totp <email>  # required before admin login
 python manage.py runserver
 ```
+
+Django Admin (`/admin/`) is reachable only from `ADMIN_ALLOWED_IPS`, a comma-separated list of CIDRs; set `ADMIN_ALLOWED_IPS=127.0.0.1/32` locally (`.env.example` does). An empty list, or any invalid entry, makes `/admin/` answer `404` to everyone. The client IP follows `DJANGO_NUM_PROXIES`, as the API rate limits do. Admin login needs the password **and** a TOTP or recovery code, so every staff user must first be enrolled with `enroll_staff_totp`: it prints the secret and `otpauth` URI once, asks for a code from the authenticator app, then prints 10 recovery codes once. `POST /admin/login/` is limited per IP by `ADMIN_LOGIN_RATE` (default `5/min`). See `.claude/specs/16-internal-admin.md`.
 
 ## Running Background Workers Locally
 

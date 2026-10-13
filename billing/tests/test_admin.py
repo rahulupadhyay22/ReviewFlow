@@ -7,7 +7,7 @@ unregistered (cross-tenant admin waits for the audited Phase 16 path).
 Plan is global, so no tenant context is involved."""
 import pytest
 from django.contrib import admin
-from django.test import Client, RequestFactory
+from django.test import RequestFactory
 
 from accounts.models import User
 from billing.admin import IMMUTABLE_AFTER_CREATION, PlanAdmin
@@ -19,11 +19,11 @@ PASSWORD = "Tr1cky-Horse-Battery-Staple!"
 
 
 @pytest.fixture
-def staff_client():
+def staff_client(admin_session_client):
+    # Spec 16: an authenticated admin session (allowlisted IP + the 2FA
+    # session flag); the real admin login flow is tested in accounts.
     user = User.objects.create_superuser("staff@example.com", PASSWORD)
-    client = Client()
-    client.force_login(user)
-    return client
+    return admin_session_client(user)
 
 
 @pytest.fixture

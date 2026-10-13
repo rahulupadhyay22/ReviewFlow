@@ -17,6 +17,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils import timezone as dj_timezone
+from django.views.decorators.debug import sensitive_variables
 
 from accounts.exceptions import (
     AlreadyMember,
@@ -24,6 +25,7 @@ from accounts.exceptions import (
     InvalidInvite,
     InvalidTotpCode,
     LastOwner,
+    NotActiveStaff,
     ReauthenticationFailed,
     TeamMemberNotFound,
     TeamPermissionDenied,
@@ -32,9 +34,15 @@ from accounts.exceptions import (
     TotpSetupRequired,
 )
 from accounts.models import Merchant, TeamMember, TeamMemberLocation, User, UserManager
-from auditlog.services import record
+from auditlog.services import record, record_platform
 from core.crypto import decrypt, encrypt
-from core.tenancy import get_current_merchant_id, tenant_atomic, tenant_context, user_lookup_atomic
+from core.tenancy import (
+    get_current_merchant_id,
+    platform_write_atomic,
+    tenant_atomic,
+    tenant_context,
+    user_lookup_atomic,
+)
 
 if TYPE_CHECKING:
     from locations.models import Location
@@ -696,3 +704,99 @@ def disable_totp(*, user: User, password: str, code: str) -> None:
             ]
         )
         record(AUDIT_TOTP_DISABLED, actor=locked, target=locked)
+
+
+# --- Staff (Django Admin) two-factor -- spec 16 D2 and LC-1 ----------------
+# Staff have no merchant, so their 2FA audit rows are platform rows
+# (merchant_id NULL) written through record_platform() inside
+# platform_write_atomic("staff_auth"). Exactly two callers may open that scope
+# (LC-1, approved 2026-10-13): confirm_staff_totp_setup and the recovery-code
+# branch of verify_staff_admin_login. User is a global table with no RLS, so
+# the plain TOTP branch needs no platform scope at all.
+
+STAFF_AUTH_SCOPE = "staff_auth"
+
+
+def _is_active_staff(user: User) -> bool:
+    return user.is_active and user.is_staff
+
+
+def begin_staff_totp_setup(*, user: User) -> tuple[str, str]:
+    """Starts (or restarts) a staff user's enrollment from the
+    enroll_staff_totp command. Raises NotActiveStaff or TotpAlreadyEnabled.
+    Returns (secret, otpauth_uri); no audit row, since nothing is enabled yet
+    (same as begin_totp_setup)."""
+    with transaction.atomic():
+        locked = _lock_user(user.id)
+        if not _is_active_staff(locked):
+            raise NotActiveStaff()
+        if locked.is_totp_enabled:
+            raise TotpAlreadyEnabled()
+        secret = pyotp.random_base32()
+        locked.totp_secret_encrypted = encrypt(secret)
+        locked.save(update_fields=["totp_secret_encrypted"])
+        email = locked.email
+    uri = pyotp.TOTP(secret, issuer=TOTP_ISSUER).provisioning_uri(name=email)
+    return secret, uri
+
+
+@sensitive_variables()
+def confirm_staff_totp_setup(*, user: User, code: str) -> list[str]:
+    """Finishes a staff user's enrollment. Raises NotActiveStaff,
+    TotpAlreadyEnabled, TotpSetupRequired or InvalidTotpCode. The lock, the
+    verification, the save and the platform audit row share ONE
+    platform_write_atomic transaction: if the audit insert fails, 2FA stays
+    disabled. Returns the plaintext recovery codes, shown once."""
+    candidate = code.strip() if isinstance(code, str) else ""
+    with platform_write_atomic(STAFF_AUTH_SCOPE):
+        locked = _lock_user(user.id)
+        if not _is_active_staff(locked):
+            raise NotActiveStaff()
+        if locked.is_totp_enabled:
+            raise TotpAlreadyEnabled()
+        if not locked.totp_secret_encrypted:
+            raise TotpSetupRequired()
+        if not (_TOTP_CODE_RE.match(candidate) and _verify_totp(locked, candidate, dj_timezone.now())):
+            raise InvalidTotpCode()
+        plaintext_codes, hashes = _generate_recovery_codes()
+        locked.totp_confirmed_at = dj_timezone.now()
+        locked.totp_recovery_code_hashes = hashes
+        locked.save(update_fields=["totp_confirmed_at", "totp_recovery_code_hashes"])
+        record_platform(AUDIT_TOTP_ENABLED, actor=locked, target=locked)
+        return plaintext_codes
+
+
+@sensitive_variables()
+def verify_staff_admin_login(*, user: User, code: str) -> bool:
+    """The admin login's second factor. False unless the user is an active,
+    enrolled staff user and the code verifies; a failure writes nothing.
+
+    A six-digit code is only ever a TOTP code (a recovery code is 20 hex
+    characters, so it can never match one): it is verified in a plain
+    transaction with replay protection and NEVER opens the staff_auth scope.
+    Any other input is tried as a recovery code inside one
+    platform_write_atomic("staff_auth") transaction, so consuming the code and
+    auditing its use commit or roll back together: an audit failure raises
+    and leaves the code valid."""
+    candidate = code.strip() if isinstance(code, str) else ""
+    if not candidate:
+        return False
+    if _TOTP_CODE_RE.match(candidate):
+        with transaction.atomic():
+            locked = _lock_user(user.id)
+            if not (_is_active_staff(locked) and locked.is_totp_enabled):
+                return False
+            return _verify_totp(locked, candidate, dj_timezone.now())
+    with platform_write_atomic(STAFF_AUTH_SCOPE):
+        locked = _lock_user(user.id)
+        if not (_is_active_staff(locked) and locked.is_totp_enabled):
+            return False
+        if not _consume_recovery_code(locked, candidate):
+            return False
+        record_platform(
+            AUDIT_TOTP_RECOVERY_USED,
+            actor=locked,
+            target=locked,
+            metadata={"recovery_codes_remaining": len(locked.totp_recovery_code_hashes)},
+        )
+        return True

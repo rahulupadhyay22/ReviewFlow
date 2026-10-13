@@ -1,6 +1,55 @@
-from django.urls import Resolver404, resolve
+import ipaddress
+
+from django.conf import settings
+from django.http import HttpResponseNotFound
+from django.urls import Resolver404, resolve, reverse
+from rest_framework.throttling import BaseThrottle
 
 from core.tenancy import tenant_atomic, tenant_context
+
+
+def client_ip(request) -> str:
+    """The client IP under the same DJANGO_NUM_PROXIES rule as the DRF
+    throttles (REMOTE_ADDR at 0, else the Nth-from-last X-Forwarded-For
+    entry). Never the raw header."""
+    return BaseThrottle().get_ident(request) or ""
+
+
+def admin_ip_allowed(request) -> bool:
+    """Fail closed (spec 16 D5): an empty ADMIN_ALLOWED_IPS, any unparsable
+    entry, or an unparsable client IP denies everyone."""
+    entries = settings.ADMIN_ALLOWED_IPS
+    if not entries:
+        return False
+    try:
+        networks = [ipaddress.ip_network(entry.strip(), strict=False) for entry in entries]
+        ip = ipaddress.ip_address(client_ip(request))
+    except ValueError:
+        return False
+    return any(ip in network for network in networks)
+
+
+class AdminIPAllowlistMiddleware:
+    """Django Admin is reachable only from ADMIN_ALLOWED_IPS
+    (Security-Controls.md §Privileged Admin Operations). Everyone else gets
+    404, so the admin's existence is not revealed. Settings are read per
+    request."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self._admin_prefix = None
+
+    def __call__(self, request):
+        if self._admin_prefix is None:
+            self._admin_prefix = reverse("admin:index")
+        # "/admin" without the slash must be hidden too: CommonMiddleware would
+        # otherwise answer it with a 301 to "/admin/", revealing the admin.
+        path = request.path_info
+        if (path == self._admin_prefix.rstrip("/") or path.startswith(self._admin_prefix)) and not admin_ip_allowed(
+            request
+        ):
+            return HttpResponseNotFound()
+        return self.get_response(request)
 
 # URL names that run inside the tenant context but NOT inside the middleware's
 # request-wide transaction. Exactly one entry, by design (spec

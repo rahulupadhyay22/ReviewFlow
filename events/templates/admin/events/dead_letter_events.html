@@ -1,0 +1,42 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Spec 16: read-only dead-letter review. `events` are plain dicts with the safe
+fields only (events.services.DEAD_LETTER_REVIEW_FIELDS); there is no payload.
+{% endcomment %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">Home</a>
+  &rsaquo; <a href="{% url 'admin:accounts_merchant_changelist' %}">Merchants</a>
+  &rsaquo; Dead-letter events
+</div>
+{% endblock %}
+{% block content %}
+<div id="content-main">
+  <p>{{ total }} dead-letter event{{ total|pluralize }}{% if total > events|length %}; showing the newest {{ events|length }}{% endif %}. Read-only.</p>
+  {% if events %}
+  <table>
+    <thead>
+      <tr>
+        <th>Event ID</th><th>Integration</th><th>Source</th><th>External event ID</th>
+        <th>Attempts</th><th>Error code</th><th>Error message</th><th>Received</th><th>Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td>{{ event.id }}</td>
+        <td>{{ event.integration_id }}</td>
+        <td>{{ event.source }}</td>
+        <td>{{ event.external_event_id }}</td>
+        <td>{{ event.attempt_count }}</td>
+        <td>{{ event.error_code|default:"-" }}</td>
+        <td>{{ event.error_message|default:"-" }}</td>
+        <td>{{ event.received_at|default:"-" }}</td>
+        <td>{{ event.updated_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

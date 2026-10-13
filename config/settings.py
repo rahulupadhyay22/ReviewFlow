@@ -32,7 +32,7 @@ DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    "config.apps.ReviewFlowAdminConfig",  # django.contrib.admin with the spec 16 site
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -56,6 +56,7 @@ AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "core.middleware.AdminIPAllowlistMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -130,6 +131,9 @@ REST_FRAMEWORK = {
         # Disconnecting an own WhatsApp number, per user (spec
         # 08-whatsapp-embedded-signup ES-5).
         "whatsapp_sender_write": env("WHATSAPP_SENDER_WRITE_RATE", default="10/min"),
+        # Django Admin login POSTs, per IP (spec 16): the same 5/min as the
+        # dashboard's login_totp second-factor step.
+        "admin_login": env("ADMIN_LOGIN_RATE", default="5/min"),
     },
     # Trusted reverse proxies in front of the app. DRF throttles key on
     # REMOTE_ADDR when 0; with N > 0 they take the Nth-from-last
@@ -148,6 +152,11 @@ CACHES = {
         "KEY_PREFIX": "rf",
     }
 }
+
+# Internal admin (spec 16 D5): CIDRs allowed to reach /admin/. Empty (the
+# default) or any invalid entry denies everyone. The client IP follows
+# DJANGO_NUM_PROXIES, like the DRF throttles.
+ADMIN_ALLOWED_IPS = env.list("ADMIN_ALLOWED_IPS", default=[])
 
 SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = env.bool("DJANGO_SECURE_COOKIES", default=True)
 

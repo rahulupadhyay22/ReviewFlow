@@ -39,17 +39,19 @@ def tenant_context(merchant_id):
 
 
 @contextmanager
-def tenant_atomic():
+def tenant_atomic(*, durable: bool = False):
     """One tenant DB transaction with SET LOCAL app.current_merchant_id.
 
     Must be the outermost transaction of a tenant context: inside an unrelated
     transaction.atomic() it becomes a savepoint, and SET LOCAL then outlives
-    this block until that outer transaction ends.
+    this block until that outer transaction ends. durable=True (spec 16)
+    enforces that: Django raises RuntimeError if the block is opened inside
+    any other atomic block (Django's own test-case transactions excepted).
     """
     merchant_id = _current_merchant_id.get()
     if merchant_id is None:
         raise TenantContextError("tenant_atomic() requires an active tenant_context().")
-    with transaction.atomic():
+    with transaction.atomic(durable=durable):
         with connection.cursor() as cursor:
             # Transaction-local, never session-level (FINAL-ARCHITECTURE-REVIEW.md §8).
             # str() of a uuid.UUID is canonical hex, so the literal is injection-safe.
@@ -279,7 +281,11 @@ def whatsapp_number_lookup_atomic(phone_number_id: str) -> Iterator[str]:
         _current_lookup_phone_number_id.reset(token)
 
 
-_PLATFORM_WRITE_SCOPES = frozenset({"whatsapp_shared_pool"})
+# "staff_auth": spec 16 LC-1 (LOCKED DECISION CHANGE, approved 2026-10-13).
+# It lets staff 2FA events write NULL-merchant audit rows; the shared-sender
+# policies require the literal 'whatsapp_shared_pool', so it cannot write
+# that row.
+_PLATFORM_WRITE_SCOPES = frozenset({"whatsapp_shared_pool", "staff_auth"})
 _current_platform_write = ContextVar("current_platform_write", default=None)
 
 
@@ -295,10 +301,16 @@ def platform_write_atomic(scope: str) -> Iterator[str]:
     whatsapp_whatsappaccount and the platform_insert policy on
     auditlog_auditlog.
 
-    Management and platform-operation infrastructure ONLY: its sole caller is
-    whatsapp.services.upsert_shared_pool_account (itself called only by the
-    configure_shared_pool command and seed_dev). Never call it from a view,
-    serializer, tenant service, task or admin.
+    Management and platform-operation infrastructure ONLY. Its callers are
+    exactly:
+    - scope "whatsapp_shared_pool": whatsapp.services.upsert_shared_pool_account
+      (itself called only by the configure_shared_pool command and seed_dev);
+    - scope "staff_auth" (spec 16 LC-1, approved 2026-10-13):
+      accounts.services.confirm_staff_totp_setup, and the recovery-code
+      branch of accounts.services.verify_staff_admin_login. A six-digit TOTP
+      code never opens it.
+    Never call it from any other view, serializer, tenant service, task or
+    admin.
 
     Refuses to run inside a merchant context (the policies are PERMISSIVE and
     therefore ORed with tenant_isolation) and is always its own outermost

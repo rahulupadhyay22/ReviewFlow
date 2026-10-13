@@ -243,3 +243,33 @@ def due_event_ids() -> list[uuid.UUID]:
         elif _is_due(event):
             due_ids.append(event.id)
     return due_ids
+
+
+# The only IntegrationEvent fields the dead-letter review ever selects (spec 16
+# D3): never payload, never location. error_code/error_message come only from
+# SAFE_ERRORS.
+DEAD_LETTER_REVIEW_FIELDS = (
+    "id",
+    "integration_id",
+    "source",
+    "external_event_id",
+    "attempt_count",
+    "error_code",
+    "error_message",
+    "received_at",
+    "updated_at",
+)
+
+
+def list_dead_letter_events(*, limit: int = 200) -> tuple[int, list[dict]]:
+    """Read-only review of the current tenant's DEAD_LETTER events (spec 16),
+    newest first. Returns (total, rows); rows are plain dicts, materialized
+    here, so the caller can render them after its tenant transaction ends.
+
+    # ponytail: fixed 200-row cap with the total shown; paginate when a
+    # merchant exceeds it."""
+    if get_current_merchant_id() is None:
+        raise TenantContextError("list_dead_letter_events() requires a tenant context.")
+    dead = IntegrationEvent.objects.filter(status=IntegrationEvent.Status.DEAD_LETTER)
+    rows = list(dead.order_by("-updated_at").values(*DEAD_LETTER_REVIEW_FIELDS)[:limit])
+    return dead.count(), rows

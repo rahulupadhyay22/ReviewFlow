@@ -76,17 +76,17 @@ def test_bearer_api_key_is_not_accepted_on_dashboard_endpoint():
     assert resp.status_code in (401, 403)
 
 
-def test_admin_login_page_and_user_list_work_for_staff_superuser(client, password):
-    User.objects.create_superuser("staff@example.com", password)
-    assert client.login(email="staff@example.com", password=password)
+def test_admin_login_page_and_user_list_work_for_staff_superuser(admin_session_client, password):
+    # Spec 16: authenticated admin session via the shared helper; the real
+    # password + second-factor login is tested in test_staff_admin_login.py.
+    client = admin_session_client(User.objects.create_superuser("staff@example.com", password))
     resp = client.get("/admin/accounts/user/")
     assert resp.status_code == 200
     assert b"staff@example.com" in resp.content
 
 
-def test_admin_merchant_is_read_only(client, password, merchant_a):
-    User.objects.create_superuser("staff2@example.com", password)
-    client.login(email="staff2@example.com", password=password)
+def test_admin_merchant_is_read_only(admin_session_client, password, merchant_a):
+    client = admin_session_client(User.objects.create_superuser("staff2@example.com", password))
     assert client.get("/admin/accounts/merchant/").status_code == 200
     assert client.get("/admin/accounts/merchant/add/").status_code == 403
     change = client.get(f"/admin/accounts/merchant/{merchant_a.id}/change/")

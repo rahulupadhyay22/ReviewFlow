@@ -30,7 +30,12 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
 - API key created / revoked
 
 **Platform-side (always logged, and always via the privileged access path described in `../02-architecture/Multi-Tenancy.md`):**
-- Any staff access to a specific merchant's data through the internal admin
+- Any staff access to a specific merchant's data through the internal admin: `staff.merchant_data_viewed` *(spec 16-internal-admin)*. Written by `auditlog.services.staff_merchant_read` under that merchant's id (`merchant_id` = the selected merchant, actor = the staff user, target = the `Merchant`, metadata `{ resource }` only), and committed before any tenant data is read: if the insert fails, nothing is read.
+- Staff (Django Admin) two-factor authentication *(spec 16-internal-admin, LC-1, approved 2026-10-13)*. These are platform rows (`merchant_id` NULL) written through `record_platform()` inside `platform_write_atomic("staff_auth")`, each in the same transaction as the change it records, so a failed audit insert rolls the change back:
+  - `user.totp_enabled`: staff enrollment through `enroll_staff_totp`, no metadata;
+  - `user.totp_recovery_code_used`: a recovery code accepted at admin login, metadata `{ recovery_codes_remaining }` only.
+
+  A successful TOTP-code admin login and a failed admin login write no audit row (as on the dashboard). No row ever contains a code, secret, `otpauth` URI or recovery hash.
 - Any cross-tenant query executed through the privileged service path
 - Shared WhatsApp sender configured or changed (`whatsapp.shared_pool_configured`; a system event with `merchant_id` NULL, written only through the platform path; metadata is the status only, never a provider id)
 - Merchant suspension / reactivation
