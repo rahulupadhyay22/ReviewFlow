@@ -32,11 +32,17 @@ per feature or task — it changes only when the current roadmap phase
 changes, which `/ship-feature` handles when a phase is completed.
 
 - Current phase: **08 — WhatsApp**
-- Status: Not started
+- Status: In progress. `08-whatsapp-foundation` (PR #16) and
+  `08-whatsapp-embedded-signup` P1–P6a (PR #17) are merged. P6b
+  (`start`/`complete`) and P7 (own-number templates) are blocked on
+  unverified Meta evidence E-4, E-2b/E-10 and E-7b
+  (`docs/05-integrations/WhatsApp-Meta.md`). No `start`/`complete`
+  route exists and `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` defaults to
+  `False`.
 - Also eligible: 09 — Google Business Profile,
   16 — Internal admin (Django Admin), 17 — Phased integrations
 
-Phases 00–03 are Done. Django apps present:
+Phases 00–07 are Done. Django apps present:
 
 - `core`: `BaseModel`, `TenantScopedManager`, tenant context
   (`tenant_context`, `tenant_atomic`, `user_lookup_atomic`,
@@ -50,12 +56,14 @@ Phases 00–03 are Done. Django apps present:
 - `locations`: `Location` + `/locations`; MANAGER scoping via
   `locations.services.accessible_locations`
 
+- `events`, `customers`, `transactions`, `integrations` (Phases 04
+  and 06), `apikeys` (Phase 05), `billing` (Phase 07) and `whatsapp`
+  (Phase 08, partial: see Status above)
+
 No other app from the Project Structure below exists yet (no
-integrations, events, customers, transactions, campaigns, WhatsApp,
-Google, billing, API keys, feedback, QR codes or analytics).
-`seed_dev` creates a merchant, 2 locations and an assigned MANAGER
-only; its Plan/Subscription and WhatsApp fixtures arrive in Phases
-07 and 08.
+campaigns, Google, feedback, QR codes or analytics). `seed_dev`
+also creates the Plan/Subscription pair (Phase 07) and the
+`SHARED_POOL` `WhatsAppAccount` fixture (Phase 08).
 
 - Before assuming a component exists, check its phase status in
   `docs/ROADMAP.md` and confirm the code is actually present.
