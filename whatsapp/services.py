@@ -260,8 +260,8 @@ def clear_location_sender(*, location, actor) -> None:
 
 # --- Embedded Signup state (spec 08-whatsapp-embedded-signup ES-18) ----------------
 #
-# Only the two storage primitives live here: no Meta call, no endpoint. The
-# start/complete flow that uses them is P6b and is blocked on evidence.
+# The two storage primitives, plus begin_embedded_signup below (the `start`
+# endpoint). The `complete` flow is P6b and is blocked on evidence.
 
 
 def _hash_signup_state(state: str) -> str:
@@ -313,6 +313,28 @@ def consume_signup_state(*, actor, state: str) -> bool:
             state_hash=_hash_signup_state(state), user=actor, expires_at__gt=now
         ).delete()
     return deleted == 1
+
+
+def begin_embedded_signup(*, actor) -> dict:
+    """Start an Embedded Signup: issue one single-use state and return what the
+    frontend SDK launch needs (spec 08-whatsapp-embedded-signup, `start`).
+
+    Raises WhatsAppNotConfigured (503) before anything is stored when the flag
+    is off or any required platform setting is unset. No Meta call is made.
+    The returned plaintext state is shown once and never stored or logged."""
+    if not (
+        settings.WHATSAPP_EMBEDDED_SIGNUP_ENABLED
+        and settings.META_APP_ID
+        and settings.META_APP_SECRET
+        and settings.META_EMBEDDED_SIGNUP_CONFIG_ID
+        and settings.FERNET_KEY
+    ):
+        raise WhatsAppNotConfigured()
+    return {
+        "state": issue_signup_state(actor=actor),
+        "app_id": settings.META_APP_ID,
+        "config_id": settings.META_EMBEDDED_SIGNUP_CONFIG_ID,
+    }
 
 
 # --- own-number lifecycle (spec 08-whatsapp-embedded-signup) -------------------------

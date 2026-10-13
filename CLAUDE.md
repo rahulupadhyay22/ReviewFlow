@@ -33,12 +33,13 @@ changes, which `/ship-feature` handles when a phase is completed.
 
 - Current phase: **08 — WhatsApp**
 - Status: In progress. `08-whatsapp-foundation` (PR #16) and
-  `08-whatsapp-embedded-signup` P1–P6a (PR #17) are merged. P6b
-  (`start`/`complete`) and P7 (own-number templates) are blocked on
-  unverified Meta evidence E-4, E-2b/E-10 and E-7b
-  (`docs/05-integrations/WhatsApp-Meta.md`). No `start`/`complete`
-  route exists and `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` defaults to
-  `False`.
+  `08-whatsapp-embedded-signup` P1–P6a (PR #17) are merged. The
+  `start` route exists and answers `503` while
+  `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` (default `False`) is off. P6b
+  `complete` and P7 (own-number templates) are blocked on unverified
+  Meta evidence E-4, E-2b/E-10 and E-7b
+  (`docs/05-integrations/WhatsApp-Meta.md`). No `complete` route
+  exists.
 - Also eligible: 09 — Google Business Profile,
   17 — Phased integrations
 

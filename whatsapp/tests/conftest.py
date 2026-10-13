@@ -284,11 +284,11 @@ def throttle_rates(monkeypatch):
     override_settings cannot reach the dict bound at import time). Patched on
     the one subclass only, so every other throttle keeps its production rate;
     monkeypatch restores it after the test."""
-    from whatsapp.views import SenderWriteRateThrottle, TemplateWriteRateThrottle
+    from whatsapp.views import SenderWriteRateThrottle, SignupRateThrottle, TemplateWriteRateThrottle
 
     def _set(**rates):
         merged = {**drf_api_settings.DEFAULT_THROTTLE_RATES, **rates}
-        for throttle in (TemplateWriteRateThrottle, SenderWriteRateThrottle):
+        for throttle in (TemplateWriteRateThrottle, SenderWriteRateThrottle, SignupRateThrottle):
             monkeypatch.setattr(throttle, "THROTTLE_RATES", merged)
 
     return _set

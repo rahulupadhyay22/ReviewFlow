@@ -6,6 +6,11 @@ urlpatterns = [
     path("whatsapp/senders", views.SendersView.as_view(), name="whatsapp-senders"),
     path("whatsapp/senders/<uuid:pk>", views.SenderDetailView.as_view(), name="whatsapp-sender-detail"),
     path(
+        "whatsapp/embedded-signup/start",
+        views.EmbeddedSignupStartView.as_view(),
+        name="whatsapp-embedded-signup-start",
+    ),
+    path(
         "locations/<uuid:pk>/whatsapp-sender",
         views.LocationSenderView.as_view(),
         name="location-whatsapp-sender",

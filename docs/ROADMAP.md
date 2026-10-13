@@ -179,12 +179,15 @@ Status (In progress; Done only when the whole phase is complete):
   `register_number` and `subscribe_app`, own-number activation and
   disconnect, the transaction allowlist, `EmbeddedSignupState`, and
   the STOP-reliability amendment (foundation Amendment A-1).
+- `08-whatsapp-embedded-signup`, P6b `start`: implemented. `POST
+  /whatsapp/embedded-signup/start` issues the single-use signup state
+  and returns `503` while `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` (default
+  `False`) is off or its configuration is unset.
 - Remaining, blocked on unverified Meta evidence
-  (`05-integrations/WhatsApp-Meta.md`): P6b `start`/`complete`
-  (E-4, E-2b/E-10) and P7 own-number template submit and sync (E-7b).
-  `WHATSAPP_EMBEDDED_SIGNUP_ENABLED` defaults to `False` and no
-  `start`/`complete` route exists, so merchants cannot connect an
-  own number yet.
+  (`05-integrations/WhatsApp-Meta.md`): P6b `complete` (E-4,
+  E-2b/E-10) and P7 own-number template submit and sync (E-7b). No
+  `complete` route exists, so merchants cannot connect an own number
+  yet.
 
 Source: `06-automation/WhatsApp-Architecture.md`,
 `01-product/User-Flows.md` §2.
