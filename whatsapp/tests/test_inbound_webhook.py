@@ -282,3 +282,103 @@ def test_handshake_answers_403_when_the_verify_token_is_unset(settings, token):
     resp = handshake(**{"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "1"})
     assert resp.status_code == 403
     assert resp.content.decode() != "1"
+
+
+# --- malformed messages: 200, no crash, no unintended opt-out -------------------------------
+
+
+def delivery(messages):
+    payload = load_fixture("inbound_text_stop.json")
+    payload["entry"][0]["changes"][0]["value"]["messages"] = messages
+    return json.dumps(payload).encode()
+
+
+def message(**overrides):
+    base = {
+        "from": CUSTOMER_PHONE.lstrip("+"),
+        "id": "wamid.TEST",
+        "timestamp": "1",
+        "type": "text",
+        "text": {"body": "STOP"},
+    }
+    base.update(overrides)
+    return base
+
+
+MALFORMED = {
+    "text-is-a-string": message(text="STOP"),
+    "text-is-a-list": message(text=["STOP"]),
+    "body-is-an-int": message(text={"body": 1}),
+    "body-is-a-list": message(text={"body": ["STOP"]}),
+    "body-is-null": message(text={"body": None}),
+    "body-missing": message(text={}),
+    "button-titled-stop": message(type="button", button={"text": "STOP", "payload": "STOP"}),
+    "unknown-type-with-body": message(type="brand-new-type"),
+    "sender-is-an-object": message(**{"from": {"wa_id": CUSTOMER_PHONE}}),
+    "sender-missing": {"id": "wamid.TEST", "type": "text", "text": {"body": "STOP"}},
+    "not-an-object": "STOP",
+}
+
+
+@pytest.mark.parametrize("bad", list(MALFORMED.values()), ids=list(MALFORMED))
+def test_a_malformed_message_answers_200_and_enqueues_nothing(enqueue, bad):
+    resp = deliver(delivery([bad]))
+
+    assert resp.status_code == 200
+    enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize("messages_field", ["STOP", {"0": "STOP"}, 7, None], ids=["string", "object", "int", "null"])
+def test_a_malformed_messages_field_answers_200_and_enqueues_nothing(enqueue, messages_field):
+    payload = load_fixture("inbound_text_stop.json")
+    payload["entry"][0]["changes"][0]["value"]["messages"] = messages_field
+
+    assert deliver(json.dumps(payload).encode()).status_code == 200
+    enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"entry": "x"}, {"entry": [1, "x"]}, {"entry": [{"changes": "x"}]}, [], "STOP", 5],
+    ids=["entry-string", "entry-items", "changes-string", "list-body", "string-body", "int-body"],
+)
+def test_a_malformed_envelope_answers_200_and_enqueues_nothing(enqueue, payload):
+    assert deliver(json.dumps(payload).encode()).status_code == 200
+    enqueue.assert_not_called()
+
+
+def test_a_mixed_delivery_still_enqueues_its_one_valid_stop(enqueue):
+    resp = deliver(delivery(list(MALFORMED.values()) + [message()]))
+
+    assert resp.status_code == 200
+    enqueue.assert_called_once()
+    assert enqueue.call_args.args == (SHARED_PHONE_NUMBER_ID, CUSTOMER_PHONE)
+
+
+def test_malformed_stop_lookalikes_never_opt_the_customer_out(
+    make_merchant, make_customer, map_to_shared, django_capture_on_commit_callbacks
+):
+    owner = make_merchant("A")
+    map_to_shared(owner.merchant)
+    make_customer(owner.merchant, CUSTOMER_PHONE)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = deliver(delivery(list(MALFORMED.values())))
+
+    assert resp.status_code == 200
+    assert opted_out(owner.merchant) == (False, None)
+
+
+def test_a_mixed_delivery_opts_out_exactly_the_valid_sender(
+    make_merchant, make_customer, map_to_shared, django_capture_on_commit_callbacks
+):
+    owner = make_merchant("A")
+    map_to_shared(owner.merchant)
+    make_customer(owner.merchant, CUSTOMER_PHONE)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = deliver(delivery(list(MALFORMED.values()) + [message()]))
+
+    assert resp.status_code == 200
+    flag, at = opted_out(owner.merchant)
+    assert flag is True and at is not None
