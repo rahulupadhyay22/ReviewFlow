@@ -123,6 +123,105 @@ def test_parse_status_ignores_inbound_message_deliveries():
     assert provider.parse_status_webhook(load_fixture("inbound_text_stop.json")) == []
 
 
+def test_parse_status_failed_fixture_keeps_its_error_code_and_valid_output_is_unchanged():
+    [update] = provider.parse_status_webhook(load_fixture("status_failed.json"))
+
+    assert update == StatusUpdate("wamid.TESTOUT0002", "FAILED", datetime.fromtimestamp(1790000300, tz=UTC), 131026)
+
+
+# --- parse_status_webhook: malformed signed bodies are skipped, never raised --------------
+
+_MISSING = object()  # also used by the inbound malformed-payload tests below
+
+
+def _statuses(statuses):
+    payload = load_fixture("status_delivered.json")
+    payload["entry"][0]["changes"][0]["value"]["statuses"] = statuses
+    return payload
+
+
+def _status(**overrides):
+    status = {"id": "wamid.TESTOUT0009", "status": "delivered", "timestamp": "1790000100", "recipient_id": "x"}
+    status.update(overrides)
+    return {key: val for key, val in status.items() if val is not _MISSING}
+
+
+@pytest.mark.parametrize("statuses", [7, "delivered", {"0": {}}, None, True], ids=["int", "string", "object", "null", "bool"])
+def test_parse_status_a_non_list_statuses_field_yields_nothing(statuses):
+    assert provider.parse_status_webhook(_statuses(statuses)) == []
+
+
+@pytest.mark.parametrize("item", ["x", 5, None, ["delivered"], True], ids=["string", "int", "null", "list", "bool"])
+def test_parse_status_a_non_object_item_is_skipped(item):
+    assert provider.parse_status_webhook(_statuses([item])) == []
+
+
+@pytest.mark.parametrize(
+    "bad_id", [_MISSING, None, "", {"id": "x"}, ["x"], True, False], ids=["missing", "null", "empty", "object", "list", "true", "false"]
+)
+def test_parse_status_an_unusable_id_is_skipped(bad_id):
+    assert provider.parse_status_webhook(_statuses([_status(id=bad_id)])) == []
+
+
+@pytest.mark.parametrize(
+    "name", [_MISSING, None, "", "unknown-state", ["delivered"], {"s": "delivered"}, 5],
+    ids=["missing", "null", "empty", "unknown", "list", "object", "int"],
+)
+def test_parse_status_an_unusable_status_name_is_skipped(name):
+    assert provider.parse_status_webhook(_statuses([_status(status=name)])) == []
+
+
+@pytest.mark.parametrize("errors", [{"a": 1}, "x", 7, None, [], [None], ["x"], [[]], [{"code": "131026"}], [{"code": True}], [{"code": None}]])
+def test_parse_status_malformed_errors_give_no_code_and_never_raise(errors):
+    [update] = provider.parse_status_webhook(_statuses([_status(status="failed", errors=errors)]))
+
+    assert update.status == "FAILED"
+    assert update.error_code is None
+
+
+@pytest.mark.parametrize("stamp", [_MISSING, None, "", "x", {"t": 1}, ["1"], 10**400, float("nan")])
+def test_parse_status_a_bad_timestamp_gives_no_time_but_keeps_the_update(stamp):
+    [update] = provider.parse_status_webhook(_statuses([_status(timestamp=stamp)]))
+
+    assert update.occurred_at is None
+    assert update.status == "DELIVERED"
+
+
+def test_parse_status_accepts_an_integer_id_and_numeric_timestamps():
+    [update] = provider.parse_status_webhook(_statuses([_status(id=1234567890, timestamp=1790000100)]))
+
+    assert update.provider_message_id == "1234567890"
+    assert update.occurred_at == datetime.fromtimestamp(1790000100, tz=UTC)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"entry": "x"}, {"entry": [1, None]}, {"entry": [{"changes": "x"}]}, {"entry": [{"changes": [None, 3]}]},
+     {"entry": [{"changes": [{"value": ["x"]}]}]}],
+    ids=["entry-string", "entry-items", "changes-string", "change-items", "value-list"],
+)
+def test_parse_status_tolerates_wrongly_typed_envelope_levels(payload):
+    assert provider.parse_status_webhook(payload) == []
+
+
+def test_parse_status_keeps_the_valid_updates_in_a_mixed_delivery():
+    statuses = [
+        "garbage",
+        _status(id=None),
+        _status(status="unknown-state"),
+        _status(id="wamid.TESTOUT0010", status="failed", errors={"a": 1}),
+        _status(id="wamid.TESTOUT0011", status="read", timestamp="x"),
+        _status(id="wamid.TESTOUT0012", status="failed", errors=[{"code": 131026}]),
+    ]
+    updates = provider.parse_status_webhook(_statuses(statuses))
+
+    assert [(u.provider_message_id, u.status, u.error_code) for u in updates] == [
+        ("wamid.TESTOUT0010", "FAILED", None),
+        ("wamid.TESTOUT0011", "READ", None),
+        ("wamid.TESTOUT0012", "FAILED", 131026),
+    ]
+
+
 def test_a_mixed_delivery_parses_to_one_message_and_one_status():
     payload = load_fixture("inbound_stop_with_status.json")
 
@@ -477,3 +576,109 @@ def test_phone_number_id_is_quoted_in_the_send_path(meta_http):
     )
 
     assert_one_safe_segment(meta_http.urls()[0], "messages")
+
+
+# --- malformed inbound payloads: skipped item by item, never an exception -----------------
+
+
+def _inbound(messages=None, metadata=None):
+    payload = load_fixture("inbound_text_stop.json")
+    value = payload["entry"][0]["changes"][0]["value"]
+    if messages is not None:
+        value["messages"] = messages
+    if metadata is not None:
+        value["metadata"] = metadata
+    return payload
+
+
+def _msg(**overrides):
+    message = {"from": PHONE_DIGITS, "id": "wamid.TEST", "timestamp": "1", "type": "text", "text": {"body": "STOP"}}
+    message.update(overrides)
+    return {key: val for key, val in message.items() if val is not _MISSING}
+
+
+@pytest.mark.parametrize("text_value", ["STOP", ["STOP"], 7, None, True], ids=["string", "list", "int", "null", "bool"])
+def test_parse_inbound_a_non_object_text_yields_no_text(text_value):
+    [message] = provider.parse_inbound_webhook(_inbound([_msg(text=text_value)]))
+    assert message.text is None
+
+
+@pytest.mark.parametrize(
+    "body", [123, None, ["STOP"], {"x": "STOP"}, True], ids=["int", "null", "list", "object", "bool"]
+)
+def test_parse_inbound_a_non_string_body_yields_no_text(body):
+    [message] = provider.parse_inbound_webhook(_inbound([_msg(text={"body": body})]))
+    assert message.text is None
+
+
+def test_parse_inbound_a_text_object_without_body_yields_no_text():
+    [message] = provider.parse_inbound_webhook(_inbound([_msg(text={})]))
+    assert message.text is None
+
+
+@pytest.mark.parametrize("kind", ["button", "interactive", "image", "reaction", "brand-new-type", None, ["text"]])
+def test_parse_inbound_a_non_text_type_never_yields_text_even_with_a_body(kind):
+    [message] = provider.parse_inbound_webhook(_inbound([_msg(type=kind)]))
+    assert message.text is None
+
+
+@pytest.mark.parametrize(
+    "sender",
+    [_MISSING, None, "", {"wa": PHONE_DIGITS}, [PHONE_DIGITS], True, False],
+    ids=["missing", "null", "empty", "object", "list", "true", "false"],
+)
+def test_parse_inbound_a_message_without_a_usable_sender_is_skipped(sender):
+    assert provider.parse_inbound_webhook(_inbound([_msg(**{"from": sender})])) == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{}, {"phone_number_id": None}, {"phone_number_id": {"id": "1"}}, {"phone_number_id": True}, "x", ["x"]],
+    ids=["empty", "null-id", "object-id", "bool-id", "string", "list"],
+)
+def test_parse_inbound_without_a_usable_phone_number_id_yields_nothing(metadata):
+    assert provider.parse_inbound_webhook(_inbound(metadata=metadata)) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"entry": "x"},
+        {"entry": ["x", 1, None]},
+        {"entry": [{"changes": "x"}]},
+        {"entry": [{"changes": ["x", None, 3]}]},
+        {"entry": [{"changes": [{"value": ["x"]}]}]},
+    ],
+    ids=["entry-string", "entry-items", "changes-string", "change-items", "value-list"],
+)
+def test_parse_inbound_tolerates_wrongly_typed_envelope_levels(payload):
+    assert provider.parse_inbound_webhook(payload) == []
+
+
+@pytest.mark.parametrize("messages", ["STOP", {"0": "STOP"}, 5], ids=["string", "object", "int"])
+def test_parse_inbound_a_non_list_messages_field_yields_nothing(messages):
+    assert provider.parse_inbound_webhook(_inbound(messages=messages)) == []
+
+
+def test_parse_inbound_accepts_integer_ids_as_text():
+    payload = _inbound(
+        [_msg(**{"from": int(PHONE_DIGITS)})], metadata={"phone_number_id": int(SHARED_PHONE_NUMBER_ID)}
+    )
+    [message] = provider.parse_inbound_webhook(payload)
+    assert (message.phone_number_id, message.from_phone, message.text) == (SHARED_PHONE_NUMBER_ID, PHONE_DIGITS, "STOP")
+
+
+def test_parse_inbound_keeps_the_valid_message_in_a_mixed_delivery():
+    messages = [
+        "garbage",
+        None,
+        _msg(text="STOP"),
+        _msg(text={"body": 1}),
+        _msg(**{"from": None}),
+        _msg(type="button"),
+        _msg(),  # the one valid text STOP
+    ]
+    parsed = provider.parse_inbound_webhook(_inbound(messages))
+
+    assert [m.text for m in parsed] == [None, None, None, "STOP"]
+    assert all(m.from_phone == PHONE_DIGITS for m in parsed)

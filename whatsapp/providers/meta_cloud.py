@@ -130,12 +130,27 @@ def _request(method: str, path: str, body: dict | None = None, *, operation: str
 
 
 def _values(payload: dict):
-    """Every webhook `value` object: entry[].changes[].value."""
-    for entry in payload.get("entry") or []:
-        for change in (entry or {}).get("changes") or []:
-            value = (change or {}).get("value")
+    """Every webhook `value` object: entry[].changes[].value. A signed body is
+    still external input: any level of the wrong JSON type is skipped, never
+    dereferenced."""
+    entries = payload.get("entry")
+    for entry in entries if isinstance(entries, list) else []:
+        changes = entry.get("changes") if isinstance(entry, dict) else None
+        for change in changes if isinstance(changes, list) else []:
+            value = change.get("value") if isinstance(change, dict) else None
             if isinstance(value, dict):
                 yield value
+
+
+def _id_text(value) -> str | None:
+    """A Meta id or phone field as text: a non-empty string, or an int as
+    Meta's examples sometimes show. Anything else (bool, object, list, empty)
+    is None, so it can never be coerced into a lookup key or a phone number."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    return value if isinstance(value, str) and value else None
 
 
 class MetaCloudProvider(WhatsAppProvider):
@@ -148,30 +163,54 @@ class MetaCloudProvider(WhatsAppProvider):
         return verify_hmac_sha256(settings.META_APP_SECRET, raw_body, signature_header[len("sha256="):])
 
     def parse_inbound_webhook(self, payload: dict) -> list[InboundMessage]:
+        """Malformed items are skipped one by one, so a valid message in the
+        same delivery is still returned. `text` is a string only for a "text"
+        message whose `text` object carries a string `body`; otherwise None."""
         out = []
         for value in _values(payload):
-            phone_number_id = (value.get("metadata") or {}).get("phone_number_id")
-            for message in value.get("messages") or []:
-                if not phone_number_id or not isinstance(message, dict) or not message.get("from"):
+            metadata = value.get("metadata")
+            phone_number_id = _id_text(metadata.get("phone_number_id")) if isinstance(metadata, dict) else None
+            messages = value.get("messages")
+            if phone_number_id is None or not isinstance(messages, list):
+                continue
+            for message in messages:
+                sender = _id_text(message.get("from")) if isinstance(message, dict) else None
+                if sender is None:
                     continue
-                text = (message.get("text") or {}).get("body") if message.get("type") == "text" else None
-                out.append(InboundMessage(str(phone_number_id), str(message["from"]), text))
+                text = None
+                if message.get("type") == "text":
+                    text_obj = message.get("text")
+                    body = text_obj.get("body") if isinstance(text_obj, dict) else None
+                    text = body if isinstance(body, str) else None
+                out.append(InboundMessage(phone_number_id, sender, text))
         return out
 
     def parse_status_webhook(self, payload: dict) -> list[StatusUpdate]:
+        """Malformed items are skipped one by one, as in parse_inbound_webhook:
+        a signed body is still external input. A status without a usable id or
+        a known status name is dropped; a bad timestamp or error code only
+        becomes None."""
         out = []
         for value in _values(payload):
-            for status in value.get("statuses") or []:
-                mapped = _STATUS_MAP.get(status.get("status")) if isinstance(status, dict) else None
-                if mapped is None or not status.get("id"):
+            statuses = value.get("statuses")
+            for status in statuses if isinstance(statuses, list) else []:
+                if not isinstance(status, dict):
+                    continue
+                name = status.get("status")
+                mapped = _STATUS_MAP.get(name) if isinstance(name, str) else None
+                message_id = _id_text(status.get("id"))
+                if mapped is None or message_id is None:
                     continue
                 try:
                     occurred_at = datetime.fromtimestamp(int(status["timestamp"]), tz=UTC)
                 except (KeyError, TypeError, ValueError, OverflowError, OSError):
                     occurred_at = None
-                errors = status.get("errors") or []
-                code = errors[0].get("code") if errors and isinstance(errors[0], dict) else None
-                out.append(StatusUpdate(str(status["id"]), mapped, occurred_at, code))
+                errors = status.get("errors")
+                first = errors[0] if isinstance(errors, list) and errors else None
+                code = first.get("code") if isinstance(first, dict) else None
+                if isinstance(code, bool) or not isinstance(code, int):
+                    code = None
+                out.append(StatusUpdate(message_id, mapped, occurred_at, code))
         return out
 
     def submit_template(self, account, template) -> str:
