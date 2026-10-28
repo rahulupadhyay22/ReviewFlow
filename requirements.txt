@@ -4,7 +4,7 @@ psycopg[binary]==3.3.6
 django-environ==0.14.0
 pytest==9.1.1
 pytest-django==4.14.0
-djangorestframework==3.18.1
+djangorestframework==3.18.2
 pyotp==2.10.0
 cryptography==50.0.1
 boto3==1.43.103
