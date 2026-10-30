@@ -51,41 +51,56 @@ class AdminIPAllowlistMiddleware:
             return HttpResponseNotFound()
         return self.get_response(request)
 
-# URL names that run inside the tenant context but NOT inside the middleware's
-# request-wide transaction. Exactly one entry, by design (spec
-# 08-whatsapp-embedded-signup D-1 Option A, approved 2026-10-09; ES-4).
+
+# (HTTP method, URL name) pairs that run inside the tenant context but NOT
+# inside the middleware request-wide transaction. Exactly three, by design. Do
+# not widen this set without fresh sign-off.
 #
-# Embedded Signup completion makes three Meta calls that the approved ES-4
-# exception requires to run outside any database transaction or row lock, with
-# the pending account committed before the registration call. One request-wide
-# tenant_atomic() would make that impossible. That view therefore sets the
-# tenant context only, and its service opens its own short tenant_atomic()
-# blocks (state consumption, persistence) around the external calls.
+# 1. POST whatsapp-embedded-signup-complete (spec 08-whatsapp-embedded-signup
+#    D-1 Option A, approved 2026-10-09; ES-4). Embedded Signup completion makes
+#    three Meta calls that the approved ES-4 exception requires to run outside
+#    any database transaction or row lock, with the pending account committed
+#    before the registration call.
+# 2. GET google-connection-locations and
+# 3. PUT location-google-location (spec 09-google-business-profile plan
+#    decision P-1, signed off by the user 2026-10-23). Both make read-only
+#    Google list calls, and the spec forbids any provider call inside a
+#    database transaction.
 #
-# Applies to POST only. Matched by resolved url_name, never cached, so a test
-# URLconf is honoured. A view added to this set that does not open its own
-# tenant_atomic() fails CLOSED, never cross-tenant: with no SET LOCAL,
+# A view in this set gets the tenant context only. It MUST open its own short
+# tenant_atomic() around every database access, including authentication and
+# the permission check (the google views do this in initial()). A view that
+# does not fails CLOSED, never cross-tenant: with no SET LOCAL,
 # app.current_merchant_id is unset, so RLS returns no rows and rejects writes.
-# Do not widen this set without fresh sign-off.
-_NON_ATOMIC_TENANT_URL_NAMES = frozenset({"whatsapp-embedded-signup-complete"})
+#
+# Matched by method and resolved url_name, never cached, so a test URLconf is
+# honoured.
+_NON_ATOMIC_TENANT_REQUESTS = frozenset(
+    {
+        ("POST", "whatsapp-embedded-signup-complete"),
+        ("GET", "google-connection-locations"),
+        ("PUT", "location-google-location"),
+    }
+)
 
 
 def _is_non_atomic_tenant_request(request) -> bool:
-    if request.method != "POST":
+    if request.method not in {method for method, _ in _NON_ATOMIC_TENANT_REQUESTS}:
         return False
     try:
         match = resolve(request.path_info, urlconf=getattr(request, "urlconf", None))
     except Resolver404:
         return False
-    return match.url_name in _NON_ATOMIC_TENANT_URL_NAMES
+    return (request.method, match.url_name) in _NON_ATOMIC_TENANT_REQUESTS
 
 
 class TenantMiddleware:
     """Runs the request inside the tenant context once auth has set
     request.merchant_id (Phase 02). Without it, the request passes through.
 
-    Every request runs inside one tenant transaction, except a POST to a view
-    named in _NON_ATOMIC_TENANT_URL_NAMES, which gets the tenant context only."""
+    Every request runs inside one tenant transaction, except a request whose
+    (method, url name) is in _NON_ATOMIC_TENANT_REQUESTS, which gets the tenant
+    context only."""
 
     def __init__(self, get_response):
         self.get_response = get_response

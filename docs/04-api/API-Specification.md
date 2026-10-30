@@ -223,11 +223,56 @@ Session + CSRF. Merchant from the session only; any `merchant_id`, `business_id`
 
 ---
 
+## Google Business Profile *(spec 09-google-business-profile; approved 2026-10-23)*
+
+Session + CSRF. Merchant from the session only; any `merchant_id` in a body is ignored. Access tokens, refresh tokens, the authorization code, the ID token, `google_account_sub` and the plaintext state or nonce are never returned. Every error message is fixed text. No endpoint here makes a non-read-only Google call: the code exchange and every token refresh run in Celery (`Architecture.md` is unchanged).
+
+### `POST /google/oauth/start`
+- **Permissions**: OWNER, ADMIN
+- **Response**: `200 { authorization_url }`. Records a single-use, time-limited attempt bound to the merchant and user; only the SHA-256 of the state and of the nonce are stored. The URL requests `openid email https://www.googleapis.com/auth/business.manage`, `access_type=offline` and `prompt=consent`.
+- **Errors**: `503 google_not_configured` (feature flag off, or the client id, secret, redirect URI or encryption key unset)
+
+### `POST /google/oauth/complete`
+- **Permissions**: OWNER, ADMIN
+- **Request**: `{ code, state }`. Google redirects the browser to the frontend, which POSTs here, so this step is CSRF-protected.
+- **Response**: `202 { attempt_id, status: "PENDING" }`. Claims the attempt and enqueues the exchange after commit; makes no Google call. The outcome is read from the attempt.
+- **Errors**: `400 invalid_oauth_state` (one generic response for a missing, expired, already claimed or another user's state); `422` (`code` missing or longer than 2048 characters); `503 google_not_configured`
+
+### `GET /google/oauth/attempts/{id}`
+- **Permissions**: OWNER, ADMIN, and only the user who started the attempt. Anyone else, including another OWNER/ADMIN of the same merchant, gets `404`.
+- **Response**: `200 { id, status, failure_code, connection_id }`. `status` is `ISSUED`, `PENDING`, `COMPLETED` or `FAILED`. `failure_code` is one of the fixed codes in `../03-database/Data-Dictionary.md` §GoogleOAuthState; no provider text.
+
+### `GET /google/connections`
+- **Permissions**: any role (it feeds the dashboard `NEEDS_REAUTH` banner)
+- **Response**: `200 { results: [{ id, google_account_email, status, connected_at }], next_cursor }`
+
+### `GET /google/connections/{id}/locations`
+- **Permissions**: OWNER, ADMIN
+- **Response**: `200 { results: [{ google_location_id, title, has_place_id, has_review_link, mapped_location_id }] }`. Read-only Google calls (accounts, then locations with `readMask=name,title,metadata`), following every page.
+- **Errors**: `404`; `409 google_needs_reauth`; `409 google_token_refresh_pending` (the access token needs a refresh, which a request never performs: a refresh task is enqueued after the read commits; retry afterwards); `429 google_rate_limited`; `503 google_unavailable`; `502 google_request_failed` (Google failed; fixed messages, never provider text)
+
+### `PUT /locations/{id}/google-location`
+- **Permissions**: OWNER, ADMIN, or a MANAGER assigned to the location
+- **Request**: `{ google_connection_id, google_location_id }`. The Place ID and the review link are read from Google, never from the request.
+- **Response**: `200 { id, google_location_id, google_place_id, review_link, average_rating, review_count, last_synced_at, connection_status }`. Idempotent when unchanged (reviews and counters are kept); a repoint replaces the three Google values together, and a changed `google_location_id` deletes the old Google location's reviews and resets `average_rating`, `review_count` and `last_synced_at` in the same transaction. Enqueues a sync after commit.
+- **Errors**: `404` (an unknown or another merchant's location or connection; a MANAGER's unassigned location); `422 google_location_not_available` (an unknown `google_location_id`, or a cross-merchant pair: one response for both, so it never reveals whether the location exists elsewhere); `422 google_place_id_missing`; `422 google_review_link_missing`; `409 google_location_already_mapped`; `409 google_needs_reauth`; `409 google_token_refresh_pending`; `429 google_rate_limited`; `503 google_unavailable`; `502 google_request_failed`
+
+### `GET /locations/{id}/google-location`
+- **Permissions**: any role; a MANAGER gets `404` for an unassigned location
+- **Response**: `200 { google_location: { id, google_location_id, google_place_id, review_link, average_rating, review_count, last_synced_at, connection_status } | null }`
+
+Unmapping and disconnecting are not provided in V1.
+
+---
+
 ## Reviews & Feedback
 
 ### `GET /reviews`
-- **Filters**: `location_id`, `date_from`, `date_to`, `rating_min`
-- **Response**: synced `GoogleReview` rows — never includes an attribution field (see `../01-product/Business-Rules.md` §8)
+- **Auth**: session, or an API key with the `reviews:read` scope (`Authentication.md` §2). A Bearer request is judged by the key alone: it never falls back to the session, an invalid key is the generic `401 invalid_api_key`, and a valid key without `reviews:read` is `403`.
+- **Permissions**: any role. A MANAGER sees only reviews of assigned locations; an API key is merchant-wide, like `GET /sales`.
+- **Filters**: `location_id`, `date_from`, `date_to`, `rating_min` (1–5). A `location_id` the caller cannot see (unassigned to a MANAGER, or another merchant's) returns an empty page, never `403` or `404`.
+- **Pagination**: cursor-based, newest `review_created_at` first.
+- **Response**: `200 { results: [{ id, location_id, google_review_id, reviewer_name, rating, text, review_created_at }], next_cursor }` — synced `GoogleReview` rows. Never includes an attribution field (see `../01-product/Business-Rules.md` §8), `reply_text` or `reply_status` (**Status: V2 — Planned. V1 Implementation: NO.**).
 
 ### `GET /feedback`
 - **Filters**: `location_id`, `date_from`, `date_to`

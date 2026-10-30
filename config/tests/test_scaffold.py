@@ -116,6 +116,17 @@ def test_beat_schedule_has_only_the_entries_added_so_far():
             "schedule": 3600.0,
             "options": {"queue": "default"},
         },
+        # Phase 09 (google_reviews.tasks), per spec 09 "Settings".
+        "google-sync-reviews": {
+            "task": "google_reviews.tasks.sync_google_reviews",
+            "schedule": float(settings.GOOGLE_SYNC_BEAT_SECONDS),
+            "options": {"queue": "google_sync"},
+        },
+        "google-refresh-tokens": {
+            "task": "google_reviews.tasks.refresh_google_tokens",
+            "schedule": 86400.0,
+            "options": {"queue": "google_sync"},
+        },
     }
 
 

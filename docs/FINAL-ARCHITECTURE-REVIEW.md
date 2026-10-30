@@ -47,8 +47,10 @@ The final documentation pass resolves the previously identified architecture inc
 
 7. **Google identifiers**
    - `google_location_id` = Google Business Profile location resource identifier.
-   - `google_place_id` = Place ID used for the public review URL.
+   - `google_place_id` = Google Place ID of the location, stored for identification; it is not used to build the review URL.
    - The two identifiers are stored separately and are never substituted for one another.
+   - The public review URL is Google's `metadata.newReviewUri` for the location, stored as returned; it is never built from `google_location_id` or `google_place_id`.
+   - *Amended 2026-10-23 (Phase 09 spec RL-1, signed off by the user).*
 
 8. **RLS**
    - `SET LOCAL app.current_merchant_id` is executed inside each tenant transaction.

@@ -208,24 +208,47 @@ Explicit mapping between a merchant-level integration and an internal location. 
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | merchant_id | FK → Merchant | No | |
-| google_account_email | string | No | |
+| google_account_sub | string | No | the ID token `sub` (unique among all Google Accounts, never reused); the reconnect key. Never returned by an API, logged or audited |
+| google_account_email | string | No | the ID token `email`; display only, never an identifier |
 | access_token_enc | encrypted blob | No | |
 | refresh_token_enc | encrypted blob | No | |
 | expires_at | datetime | No | |
 | status | enum | No | ACTIVE, NEEDS_REAUTH |
 | connected_at | datetime | Yes | |
 
+**Unique constraint**: `(merchant_id, google_account_sub)` (`google_connection_merchant_sub_uniq`).
+
+### GoogleOAuthState
+One connect attempt (spec 09-google-business-profile OD-2). Only the sha256 of the state and of the OpenID Connect nonce are stored.
+
+| Field | Type | Nullable | Notes |
+|---|---|---|---|
+| merchant_id | FK → Merchant | No | |
+| user_id | FK → User | No | the user who started the attempt; only that user can read it |
+| state_hash | string | No | unique; sha256 of the state |
+| nonce_hash | string | No | sha256 of the nonce the ID token must echo |
+| status | enum | No | ISSUED, PENDING, COMPLETED, FAILED |
+| code_enc | encrypted blob | Yes | the authorization code, only while PENDING and before the exchange task takes it |
+| failure_code | enum | Yes | set iff FAILED: OAUTH_EXPIRED, EXCHANGE_FAILED, EXCHANGE_INTERRUPTED, SCOPE_MISSING, IDENTITY_MISSING, REFRESH_TOKEN_MISSING, ID_TOKEN_INVALID, ID_TOKEN_UNVERIFIABLE, ACTOR_NOT_MEMBER, GOOGLE_ACCOUNT_ALREADY_CONNECTED |
+| google_connection_id | FK → GoogleConnection | Yes | set iff COMPLETED |
+| expires_at | datetime | No | |
+| completed_at | datetime | Yes | |
+
+**Check constraints**: `code_enc` is NULL unless `status` is PENDING; `failure_code` is set iff `status` is FAILED; a COMPLETED row has a `google_connection_id`.
+
 ### GoogleLocation
 | Field | Type | Nullable | Notes |
 |---|---|---|---|
 | location_id | FK → Location | No | unique |
 | google_connection_id | FK → GoogleConnection | No | |
-| google_location_id | string | No | Google Business Profile location resource identifier; not the Place ID used in the public review URL |
-| google_place_id | string | Yes | Google Place ID used to construct/validate the customer review URL; populated during mapping when available |
-| review_link | string (URL) | No | generated from the stored Google Place ID; never inferred by treating `google_location_id` as a Place ID |
+| google_location_id | string | No | Google Business Profile location resource name `accounts/{accountId}/locations/{locationId}` (the v4 reviews API is addressed by it); not the Place ID |
+| google_place_id | string | Yes | Google Place ID of the location (`metadata.placeId`); required by ReviewFlow when mapping; not used to build the review URL |
+| review_link | string (URL) | No | Google's `metadata.newReviewUri`, stored as returned; never built from `google_location_id` or `google_place_id` |
 | average_rating | decimal | Yes | last synced value |
 | review_count | integer | Yes | last synced value |
 | last_synced_at | datetime | Yes | |
+
+**Unique constraints**: `(location_id)`; `(google_connection_id, google_location_id)` (`google_location_unique_per_connection`).
 
 ### GoogleReview
 | Field | Type | Nullable | Notes |

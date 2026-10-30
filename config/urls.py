@@ -11,4 +11,5 @@ urlpatterns = [
     path("api/v1/", include("billing.urls")),
     path("api/v1/", include("whatsapp.urls")),
     path("api/v1/", include("customers.urls")),
+    path("api/v1/", include("google_reviews.urls")),
 ]

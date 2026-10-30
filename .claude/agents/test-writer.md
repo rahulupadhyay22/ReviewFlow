@@ -113,7 +113,7 @@ that this feature touches, for example:
 | Campaign execution | `UNIQUE(campaign_id, transaction_id)`; two campaigns racing one transaction → one execution; opt-out blocks; merchant-wide frequency cap across locations |
 | Dispatch | `SKIP LOCKED` → only one worker sends; refund before send → `CANCELLED`; `CampaignExecution` stays `SENT` while `WhatsAppMessage` moves to `DELIVERED`/`READ` |
 | Quota/billing | Reserve at `SENDING` only; `QUOTA_EXCEEDED` → `EXPIRED` after 7 days; resume re-checks all eligibility; retry never double-counts; `PAST_DUE` blocks sends |
-| Google | Re-sync doesn't duplicate reviews; `google_location_id` ≠ `google_place_id`, review link uses Place ID |
+| Google | Re-sync doesn't duplicate reviews; `google_location_id` ≠ `google_place_id`, review link is Google's `newReviewUri`, never built from either identifier |
 | QR | `QRScanEvent` stores no raw IP |
 | Audited action | An `AuditLog` row is written |
 

@@ -571,6 +571,7 @@ def test_opt_in_registry_includes_salesview():
     from django.urls import get_resolver
 
     from accounts.views import MerchantView
+    from google_reviews.views import ReviewsView
     from integrations.views import SalesView
 
     def _iter(patterns):
@@ -585,7 +586,8 @@ def test_opt_in_registry_includes_salesview():
                 yield (cls, m)
 
     pairs = set(_iter(get_resolver().url_patterns))
-    assert pairs == {(MerchantView, "GET"), (SalesView, "GET"), (SalesView, "POST")}
+    # Phase 09 adds ReviewsView GET (reviews:read), per spec 09 "GET /reviews".
+    assert pairs == {(MerchantView, "GET"), (SalesView, "GET"), (SalesView, "POST"), (ReviewsView, "GET")}
 
 
 def test_low_api_key_rate_returns_429_on_the_nth_plus_one_sales_request(
