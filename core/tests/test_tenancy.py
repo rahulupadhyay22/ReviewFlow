@@ -269,9 +269,13 @@ def _probe():
     }
 
 
-def test_the_non_atomic_allowlist_is_exactly_one_url_name():
-    assert core_middleware._NON_ATOMIC_TENANT_URL_NAMES == frozenset(
-        {"whatsapp-embedded-signup-complete"}
+def test_the_non_atomic_allowlist_is_exactly_three_method_and_url_name_pairs():
+    assert core_middleware._NON_ATOMIC_TENANT_REQUESTS == frozenset(
+        {
+            ("POST", "whatsapp-embedded-signup-complete"),
+            ("GET", "google-connection-locations"),
+            ("PUT", "location-google-location"),
+        }
     )
 
 

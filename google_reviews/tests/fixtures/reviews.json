@@ -1,0 +1,40 @@
+{
+  "reviews": [
+    {
+      "reviewId": "TEST-REVIEW-ID-1",
+      "reviewer": {"displayName": "Test Reviewer One", "isAnonymous": false},
+      "starRating": "FIVE",
+      "comment": "Great coffee.",
+      "createTime": "2026-09-01T10:00:00.123456Z",
+      "updateTime": "2026-09-01T10:00:00.123456Z",
+      "name": "accounts/100000000001/locations/200000000001/reviews/TEST-REVIEW-ID-1"
+    },
+    {
+      "reviewId": "TEST-REVIEW-ID-2",
+      "reviewer": {"displayName": "A Google User", "isAnonymous": true},
+      "starRating": "ONE",
+      "createTime": "2026-09-02T10:00:00Z",
+      "updateTime": "2026-09-02T10:00:00Z",
+      "name": "accounts/100000000001/locations/200000000001/reviews/TEST-REVIEW-ID-2"
+    },
+    {
+      "reviewId": "TEST-REVIEW-ID-3",
+      "reviewer": {"displayName": "Test Reviewer Three"},
+      "starRating": "STAR_RATING_UNSPECIFIED",
+      "comment": "No stars given.",
+      "createTime": "2026-09-03T10:00:00Z",
+      "updateTime": "2026-09-03T10:00:00Z"
+    },
+    {
+      "reviewId": "TEST-REVIEW-ID-4",
+      "reviewer": {"displayName": "Test Reviewer Four", "isAnonymous": false},
+      "starRating": "THREE",
+      "comment": "Okay.",
+      "createTime": "2026-09-04T10:00:00Z",
+      "updateTime": "2026-09-04T10:00:00Z",
+      "reviewReply": {"comment": "Thanks", "updateTime": "2026-09-05T10:00:00Z"}
+    }
+  ],
+  "averageRating": 3.5,
+  "totalReviewCount": 4
+}

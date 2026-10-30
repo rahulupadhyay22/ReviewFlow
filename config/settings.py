@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "apikeys",
     "billing",
     "whatsapp",
+    "google_reviews",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -299,4 +300,43 @@ CELERY_BEAT_SCHEDULE["whatsapp-shared-pool-quality"] = {
     "task": "whatsapp.tasks.monitor_shared_pool_quality",
     "schedule": WHATSAPP_QUALITY_POLL_SECONDS,
     "options": {"queue": "default"},
+}
+
+# Google Business Profile (spec 09-google-business-profile). The client secret
+# is a platform secret: never stored in the database, logged, audited or
+# returned. Empty defaults fail closed: POST /google/oauth/start answers 503
+# google_not_configured. The flag stays False by default; turning it on needs
+# the spec's production-readiness gates (API access, a verified consent screen,
+# and the live nonce observation).
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+GOOGLE_OAUTH_REDIRECT_URI = env("GOOGLE_OAUTH_REDIRECT_URI", default="")
+GOOGLE_INTEGRATION_ENABLED = env.bool("GOOGLE_INTEGRATION_ENABLED", default=False)
+# Per-call timeout for every Google HTTP call (token, list, reviews, JWKS).
+GOOGLE_HTTP_TIMEOUT_SECONDS = env.int("GOOGLE_HTTP_TIMEOUT_SECONDS", default=10)
+# Lifetime of one connect attempt (GoogleOAuthState.expires_at), and how long a
+# terminal attempt row is kept before the daily sweep deletes it.
+GOOGLE_OAUTH_STATE_MAX_AGE_SECONDS = env.int("GOOGLE_OAUTH_STATE_MAX_AGE_SECONDS", default=600)
+GOOGLE_OAUTH_ATTEMPT_RETENTION_SECONDS = env.int("GOOGLE_OAUTH_ATTEMPT_RETENTION_SECONDS", default=86400)
+# A PENDING attempt whose code was taken is an exchange in flight; it is not
+# expired until this long past expires_at.
+GOOGLE_OAUTH_EXCHANGE_GRACE_SECONDS = env.int(
+    "GOOGLE_OAUTH_EXCHANGE_GRACE_SECONDS", default=GOOGLE_HTTP_TIMEOUT_SECONDS + 60
+)
+# Google documents no fixed access-token lifetime (G-3), so the margin is
+# applied to expires_at, which comes from the response's expires_in.
+GOOGLE_TOKEN_REFRESH_MARGIN_SECONDS = env.int("GOOGLE_TOKEN_REFRESH_MARGIN_SECONDS", default=300)
+GOOGLE_SYNC_BEAT_SECONDS = env.int("GOOGLE_SYNC_BEAT_SECONDS", default=900)
+GOOGLE_SYNC_INTERVAL_SECONDS = env.int("GOOGLE_SYNC_INTERVAL_SECONDS", default=2700)
+# The discovery document's jwks_uri (G-15). A public URL, not a secret.
+GOOGLE_OIDC_JWKS_URI = env("GOOGLE_OIDC_JWKS_URI", default="https://www.googleapis.com/oauth2/v3/certs")
+CELERY_BEAT_SCHEDULE["google-sync-reviews"] = {
+    "task": "google_reviews.tasks.sync_google_reviews",
+    "schedule": float(GOOGLE_SYNC_BEAT_SECONDS),
+    "options": {"queue": "google_sync"},
+}
+CELERY_BEAT_SCHEDULE["google-refresh-tokens"] = {
+    "task": "google_reviews.tasks.refresh_google_tokens",
+    "schedule": 86400.0,
+    "options": {"queue": "google_sync"},
 }

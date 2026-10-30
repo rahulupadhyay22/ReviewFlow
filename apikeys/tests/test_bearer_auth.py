@@ -270,10 +270,12 @@ def _iter_view_method_pairs(patterns, prefix=""):
 
 def test_opt_in_registry_is_exactly_merchantview_get_and_salesview():
     from accounts.views import MerchantView
+    from google_reviews.views import ReviewsView
     from integrations.views import SalesView
 
     pairs = set(_iter_view_method_pairs(get_resolver().url_patterns))
-    assert pairs == {(MerchantView, "GET"), (SalesView, "GET"), (SalesView, "POST")}
+    # Phase 09 adds ReviewsView GET (reviews:read), per spec 09 "GET /reviews".
+    assert pairs == {(MerchantView, "GET"), (SalesView, "GET"), (SalesView, "POST"), (ReviewsView, "GET")}
 
 
 def test_api_key_authentication_is_not_a_default_authentication_class():

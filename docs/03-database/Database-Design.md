@@ -152,7 +152,7 @@ Create/Update Transaction
 ### GoogleLocation
 **Purpose**: maps one internal `Location` to one Google Business Profile location.
 **Unique constraint**: `(location_id)`.
-**Fields of note**: store both `google_location_id` (Google Business Profile location resource identifier) and `google_place_id` (Place ID used for the public review URL). They are distinct identifiers and must never be substituted for one another.
+**Fields of note**: store both `google_location_id` (Google Business Profile location resource identifier) and `google_place_id` (Google Place ID) and `review_link` (Google's `newReviewUri`). They are distinct identifiers and must never be substituted for one another.
 **Relationships**: GoogleConnection 1───*; 1───* GoogleReview.
 **Tenant ownership**: LOCATION.
 

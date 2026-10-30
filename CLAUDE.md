@@ -40,8 +40,7 @@ changes, which `/ship-feature` handles when a phase is completed.
   Meta evidence E-4, E-2b/E-10 and E-7b
   (`docs/05-integrations/WhatsApp-Meta.md`). No `complete` route
   exists.
-- Also eligible: 09 — Google Business Profile,
-  17 — Phased integrations
+- Also eligible: 17 — Phased integrations
 
 Phases 00–07 are Done. Django apps present:
 
@@ -320,7 +319,7 @@ above and in `docs/`):
   is poll-based (`dispatch_due_executions`, `FOR UPDATE SKIP LOCKED`).
 - **Never substitute `google_place_id` for `google_location_id`** (or
   the reverse) — the Business Profile location ID and the Place ID
-  are stored separately; review links use the Place ID only.
+  are stored separately; the review link is Google's `newReviewUri`, never built from either identifier.
 - **Never implement a field just because it is in the Data
   Dictionary** — check `docs/01-product/Feature-Scope.md` first
   (e.g. `GoogleReview.reply_text` is V2).

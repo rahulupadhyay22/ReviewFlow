@@ -25,21 +25,22 @@ Call Account/Location-list API -> present mapping UI
    ↓
 Merchant maps each Google location to an internal Location
    ↓
-GoogleLocation created (stores the Google Business Profile location identifier and, separately, the Google Place ID used for the public review link)
+GoogleLocation created (stores the Google Business Profile location resource name `accounts/{accountId}/locations/{locationId}`, separately the Google Place ID, and Google's `newReviewUri` as the review link)
    ↓
 First sync enqueued immediately; subsequent syncs on schedule
 ```
 
 ## Review Link
 
-Built from the stored Google Place ID (not `google_location_id`): `https://search.google.com/local/writereview?placeid=<place_id>`. `google_location_id` remains the Business Profile location resource identifier used for review sync. Usable in WhatsApp messages, QR codes, the feedback page, receipts, packaging, or counter displays. The business can test the link before activating a campaign.
+Google's own review URL for the location (`metadata.newReviewUri` from the Business Information API), stored as returned at mapping time and never constructed by ReviewFlow from `google_location_id` or `google_place_id`. `google_location_id` remains the Business Profile location resource identifier used for review sync. Usable in WhatsApp messages, QR codes, the feedback page, receipts, packaging, or counter displays. The business can test the link before activating a campaign.
 
 ## Sync
 
 - Polling-based (Google doesn't broadly offer real-time review webhooks), via `GoogleLocation.last_synced_at` as the watermark.
 - Scheduled by Celery Beat (`sync_google_reviews`), every 30–60 minutes per location, staggered to respect API quota.
 - New/updated reviews are upserted on `(google_location_id, google_review_id)`.
-- Rate-limit handling: back off per Google's `Retry-After` header, resume on the next scheduled tick rather than busy-retrying.
+- A review that disappears upstream is kept locally (no deletion detection). A deliberate local remap of a location to a different Google location is different: it deletes the old Google location's reviews and resets the rating, count and watermark, so reviews of one Google location never appear under another. A sync that started before the remap writes nothing after it.
+- Rate-limit handling: on HTTP 429 stop the run (Google documents no `Retry-After`, G-12) and resume on the next scheduled tick rather than busy-retrying.
 
 ## OAuth Token Lifecycle
 
@@ -65,5 +66,5 @@ Google gives no reliable mechanism to link a specific review back to a specific 
 | Failure | Handling |
 |---|---|
 | Token expired/revoked | `NEEDS_REAUTH` status, dashboard banner, sync paused, sending unaffected |
-| Google API rate-limited | Back off per `Retry-After`, resume on next tick |
+| Google API rate-limited | Stop the run on 429, resume on next tick |
 | Location unmapped | No sync attempted; campaign activation is blocked until mapped or explicitly skipped |

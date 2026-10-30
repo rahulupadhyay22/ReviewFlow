@@ -35,7 +35,7 @@ several specs if it is too large for one branch.
 | 06 | Priority integrations                     | 04 (+05, REST API) | Done        |
 | 07 | Billing & quota foundation                | 02                 | Done        |
 | 08 | WhatsApp                                  | 03                 | In progress |
-| 09 | Google Business Profile                   | 03                 | Not started |
+| 09 | Google Business Profile                   | 03                 | Done        |
 | 10 | Campaign engine & eligibility             | 04, 07, 08, 09     | Not started |
 | 11 | Dispatch, quota reservation & recovery    | 07, 08, 10         | Not started |
 | 12 | Customer feedback                         | 10                 | Not started |
@@ -197,7 +197,7 @@ Source: `06-automation/WhatsApp-Architecture.md`,
 - `GoogleConnection` (merchant-level OAuth, encrypted tokens)
 - `GoogleLocation` (location mapping; `google_location_id` and
   `google_place_id` stored separately)
-- `GoogleReview` sync + upsert; review link built from Place ID only
+- `GoogleReview` sync + upsert; review link from Google's `newReviewUri` (spec 09 RL-1)
 - `refresh_google_tokens`; `NEEDS_REAUTH` handling
 - `/reviews`
 

@@ -1,0 +1,4 @@
+{
+  "error": "admin_policy_enforced",
+  "error_description": "The request is blocked by an administrator policy."
+}

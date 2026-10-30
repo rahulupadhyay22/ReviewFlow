@@ -23,7 +23,11 @@ See `../03-database/Data-Dictionary.md` for the full field list: `merchant_id` (
   - `whatsapp.own_number_activation_failed` (system event, no actor, no metadata).
 
   The target is the `WhatsAppAccount`. Metadata never contains an access token, authorization code, PIN, `phone_number_id` or `business_account_id`.
-- Google connection added / reauthorized
+- Google connection added or reauthorized *(spec 09-google-business-profile, approved 2026-10-23)*:
+  - `google.connection_added`;
+  - `google.connection_reauthorized`.
+
+  The target is the `GoogleConnection`; the actor is the user who started the connect attempt. No metadata is recorded: never a token, authorization code, ID token, `google_account_sub` or email. A connection moving to `NEEDS_REAUTH` is a system event and writes no audit row; it is logged as a structured warning carrying only the connection id and a fixed reason.
 - Billing plan changed; checkout started; cancellation requested
 - Plan-change replacement started, committed (downgrade) or abandoned (`billing.replacement_started`, `billing.replacement_committed`, `billing.replacement_abandoned`); and, for staff, a paid replacement on an ended subscription (`billing.replacement_paid_after_end`, system event, written once). Metadata holds plan names, the plan id and the kind or effect only: never a provider reference, payment id or PII
 - Subscription state changed (activated, past due, recovered, cancelled, expired) and each dunning checkpoint reached — system events with no actor

@@ -195,7 +195,7 @@ Each native POS adapter (Shopify, WooCommerce, Petpooja, GoFrugal) has a fixture
 - Same provider event ID can exist under separate integrations without collision.
 
 ### Google identifiers
-- `google_location_id` and `google_place_id` are stored separately; review links are generated from Place ID only.
+- `google_location_id` and `google_place_id` are stored separately; the review link is Google's `newReviewUri`, never built from either identifier.
 
 ### RLS
 - Pooled database connections cannot retain a previous merchant context because `SET LOCAL` is used inside each transaction.

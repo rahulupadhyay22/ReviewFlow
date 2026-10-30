@@ -1,0 +1,19 @@
+{
+  "locations": [
+    {
+      "name": "locations/200000000001",
+      "title": "Test Cafe Indiranagar",
+      "metadata": {"placeId": "ChIJ-TEST-PLACE-1", "newReviewUri": "https://g.page/r/TEST-REVIEW-1/review"}
+    },
+    {
+      "name": "locations/200000000002",
+      "title": "Test Cafe Koramangala",
+      "metadata": {"newReviewUri": "https://g.page/r/TEST-REVIEW-2/review"}
+    },
+    {
+      "name": "locations/200000000003",
+      "title": "Test Cafe Whitefield",
+      "metadata": {"placeId": "ChIJ-TEST-PLACE-3"}
+    }
+  ]
+}

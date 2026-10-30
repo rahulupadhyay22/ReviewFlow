@@ -1,0 +1,5 @@
+{
+  "accounts": [
+    {"name": "accounts/100000000001", "accountName": "Test Merchant Pvt Ltd", "type": "PERSONAL"}
+  ]
+}
